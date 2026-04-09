@@ -295,16 +295,16 @@ export class CalDAVCalendarClient {
 
     let updatedIcs = originalData;
 
-    if (updates.title !== undefined) {
+    if (updates.title !== undefined && updates.title !== null && updates.title !== '') {
       updatedIcs = setVEventProp(updatedIcs, 'SUMMARY', escapeICalText(updates.title));
     }
-    if (updates.description !== undefined) {
+    if (updates.description !== undefined && updates.description !== null && updates.description !== '') {
       updatedIcs = setVEventProp(updatedIcs, 'DESCRIPTION', escapeICalText(updates.description));
     }
-    if (updates.location !== undefined) {
+    if (updates.location !== undefined && updates.location !== null && updates.location !== '') {
       updatedIcs = setVEventProp(updatedIcs, 'LOCATION', escapeICalText(updates.location));
     }
-    if (updates.start !== undefined) {
+    if (updates.start !== undefined && updates.start !== null && updates.start !== '') {
       // Preserve existing DTSTART params (e.g. TZID) when replacing the value
       const existingDtstart = originalData.match(/^(DTSTART[^:]*):.*$/m);
       const dtstartKey = existingDtstart ? existingDtstart[1] : 'DTSTART';
@@ -314,7 +314,7 @@ export class CalDAVCalendarClient {
         `${dtstartKey}:${dtstartVal}`
       );
     }
-    if (updates.end !== undefined) {
+    if (updates.end !== undefined && updates.end !== null && updates.end !== '') {
       const existingDtend = originalData.match(/^(DTEND[^:]*):.*$/m);
       const dtendKey = existingDtend ? existingDtend[1] : 'DTEND';
       const dtendVal = updates.end.replace(/[-:]/g, '').replace(/\.\d{3}/, '');
