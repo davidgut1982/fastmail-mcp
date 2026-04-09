@@ -698,18 +698,22 @@ export class JmapClient {
     return submissionId;
   }
 
-  async getRecentEmails(limit: number = 10, mailboxName: string = 'inbox', ascending: boolean = false): Promise<any[]> {
+  async getRecentEmails(limit: number = 10, mailboxName: string | null = null, ascending: boolean = false): Promise<any[]> {
     const session = await this.getSession();
-    
-    // Find the specified mailbox (default to inbox)
-    const mailboxes = await this.getMailboxes();
-    const targetMailbox = mailboxes.find(mb => 
-      mb.role === mailboxName.toLowerCase() || 
-      mb.name.toLowerCase().includes(mailboxName.toLowerCase())
-    );
-    
-    if (!targetMailbox) {
-      throw new Error(`Could not find mailbox: ${mailboxName}`);
+
+    // When mailboxName is null or empty, search all mail (no inMailbox filter).
+    // When a mailbox name is provided, resolve it and restrict the query to that mailbox.
+    let filter: any = {};
+    if (mailboxName) {
+      const mailboxes = await this.getMailboxes();
+      const targetMailbox = mailboxes.find(mb =>
+        mb.role === mailboxName.toLowerCase() ||
+        mb.name.toLowerCase().includes(mailboxName.toLowerCase())
+      );
+      if (!targetMailbox) {
+        throw new Error(`Could not find mailbox: ${mailboxName}`);
+      }
+      filter = { inMailbox: targetMailbox.id };
     }
 
     const request: JmapRequest = {
@@ -717,7 +721,7 @@ export class JmapClient {
       methodCalls: [
         ['Email/query', {
           accountId: session.accountId,
-          filter: { inMailbox: targetMailbox.id },
+          filter,
           sort: [{ property: 'receivedAt', isAscending: ascending }],
           limit: Math.min(limit, 50)
         }, 'query'],
@@ -1172,12 +1176,24 @@ export class JmapClient {
   async searchEmails(query: string, limit: number = 20, ascending: boolean = false): Promise<any[]> {
     const session = await this.getSession();
 
+    // When the query looks like a sender address (contains @), Fastmail JMAP does not
+    // match mid-address substrings starting after a dot in the local part via the
+    // generic `text` filter. Using the domain portion as an explicit `from` filter via
+    // OR is reliably matched. Verified against the live Fastmail JMAP API.
+    const filter = query.includes('@')
+      ? (() => {
+          const atToken = query.split(/\s+/).find(t => t.includes('@')) || query;
+          const fromDomain = atToken.includes('@') ? atToken.split('@').slice(1).join('@') : atToken;
+          return { operator: 'OR', conditions: [{ text: query }, { from: fromDomain }] };
+        })()
+      : { text: query };
+
     const request: JmapRequest = {
       using: ['urn:ietf:params:jmap:core', 'urn:ietf:params:jmap:mail'],
       methodCalls: [
         ['Email/query', {
           accountId: session.accountId,
-          filter: { text: query },
+          filter,
           sort: [{ property: 'receivedAt', isAscending: ascending }],
           limit
         }, 'query'],

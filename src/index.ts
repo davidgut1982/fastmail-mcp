@@ -563,6 +563,45 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
         },
       },
       {
+        name: 'update_calendar_event',
+        description: 'Update an existing calendar event. Only fields you provide are changed; all other fields are preserved unchanged.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            eventId: {
+              type: 'string',
+              description: 'UID or URL of the event to update (from get_calendar_event or list_calendar_events)',
+            },
+            title: {
+              type: 'string',
+              description: 'New event title (optional)',
+            },
+            description: {
+              type: 'string',
+              description: 'New event description (optional)',
+            },
+            start: {
+              type: 'string',
+              description: 'New start time in ISO 8601 format (optional)',
+            },
+            end: {
+              type: 'string',
+              description: 'New end time in ISO 8601 format (optional)',
+            },
+            location: {
+              type: 'string',
+              description: 'New event location (optional)',
+            },
+            participants: {
+              type: 'array',
+              items: { type: 'string' },
+              description: 'Replacement list of participant email addresses (optional; replaces all existing attendees)',
+            },
+          },
+          required: ['eventId'],
+        },
+      },
+      {
         name: 'list_identities',
         description: 'List sending identities (email addresses that can be used for sending)',
         inputSchema: {
@@ -572,7 +611,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       },
       {
         name: 'get_recent_emails',
-        description: 'Get the most recent emails from inbox (like top-ten)',
+        description: 'Get the most recent emails. Searches all mail by default; pass mailboxName to restrict to a specific mailbox.',
         inputSchema: {
           type: 'object',
           properties: {
@@ -583,8 +622,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
             },
             mailboxName: {
               type: 'string',
-              description: 'Mailbox to search (default: inbox)',
-              default: 'inbox',
+              description: 'Mailbox to search (optional; omit or leave empty to search all mail)',
             },
             ascending: {
               type: 'boolean',
@@ -1358,6 +1396,21 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         }
       }
 
+      case 'update_calendar_event': {
+        const { eventId, title, description, start, end, location, participants } = args as any;
+        if (!eventId) {
+          throw new McpError(ErrorCode.InvalidParams, 'eventId is required');
+        }
+        const davClient = initializeCalDAVClient();
+        if (!davClient) {
+          throw new McpError(ErrorCode.InvalidRequest, 'CalDAV not configured. Set FASTMAIL_CALDAV_USERNAME and FASTMAIL_CALDAV_PASSWORD to use update_calendar_event.');
+        }
+        const updated = await davClient.updateCalendarEvent(eventId, {
+          title, description, start, end, location, participants,
+        });
+        return { content: [{ type: 'text', text: JSON.stringify(updated, null, 2) }] };
+      }
+
       case 'list_identities': {
         const client = initializeClient();
         const identities = await client.getIdentities();
@@ -1373,7 +1426,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       }
 
       case 'get_recent_emails': {
-        const { limit = 10, mailboxName = 'inbox', ascending } = args as any;
+        const { limit = 10, mailboxName = null, ascending } = args as any;
         const client = initializeClient();
         const emails = await client.getRecentEmails(limit, mailboxName, !!ascending);
         return {

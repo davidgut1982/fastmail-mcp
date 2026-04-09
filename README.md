@@ -158,8 +158,8 @@ You can install this server as a Desktop Extension for Claude Desktop using the 
   - Parameters: `to` (optional array), `cc` (optional array), `bcc` (optional array), `from` (optional), `mailboxId` (optional), `subject` (optional), `textBody` (optional), `htmlBody` (optional), `replyTo` (optional array)
 - **search_emails**: Search emails by content
   - Parameters: `query` (required), `limit` (default: 20), `ascending` (optional, oldest first)
-- **get_recent_emails**: Get the most recent emails from a mailbox (inspired by JMAP-Samples top-ten)
-  - Parameters: `limit` (default: 10, max: 50), `mailboxName` (default: 'inbox'), `ascending` (optional, oldest first)
+- **get_recent_emails**: Get the most recent emails. Searches all mail by default; pass `mailboxName` to restrict to a specific mailbox.
+  - Parameters: `limit` (default: 10, max: 50), `mailboxName` (optional; omit to search all mail), `ascending` (optional, oldest first)
 - **mark_email_read**: Mark an email as read or unread
   - Parameters: `emailId` (required), `read` (default: true)
 - **delete_email**: Delete an email (move to trash)
@@ -219,6 +219,9 @@ You can install this server as a Desktop Extension for Claude Desktop using the 
   - Parameters: `eventId` (required)
 - **create_calendar_event**: Create a new calendar event
   - Parameters: `calendarId` (required), `title` (required), `description` (optional), `start` (required, ISO 8601), `end` (required, ISO 8601), `location` (optional), `participants` (optional array)
+- **update_calendar_event**: Update an existing calendar event (CalDAV only — requires `FASTMAIL_CALDAV_USERNAME` / `FASTMAIL_CALDAV_PASSWORD`)
+  - Parameters: `eventId` (required — UID or URL from `get_calendar_event`), `title` (optional), `description` (optional), `start` (optional, ISO 8601), `end` (optional, ISO 8601), `location` (optional), `participants` (optional array of email strings — replaces all existing attendees)
+  - Only fields you provide are changed. All other fields on the event are preserved unchanged.
 
 ### Identity & Testing Tools
 
@@ -226,6 +229,33 @@ You can install this server as a Desktop Extension for Claude Desktop using the 
 - **check_function_availability**: Check which functions are available based on account permissions (includes setup guidance)
 - **test_bulk_operations**: Safely test bulk operations with dry-run mode
   - Parameters: `dryRun` (default: true), `limit` (default: 3)
+
+## Behavior Notes
+
+### `search_emails` — sender address matching
+
+When the query contains an `@` sign, `search_emails` augments the JMAP filter with an
+explicit `from` filter on the **domain portion** of the address, combined via OR with the
+generic `text` filter. This is required because Fastmail's JMAP API does not match
+mid-address substrings that follow a dot in the local part. For example:
+
+- `{ from: "troopmaster.email" }` → matches emails from that domain ✅
+- `{ from: "WoodstockPack367@troopmaster.email" }` → 0 results ❌
+
+Using only the domain as the `from` filter is reliable and verified against the live
+Fastmail JMAP API.
+
+### `get_recent_emails` — mailbox scope
+
+The default for `mailboxName` is now `null` (all mail) instead of `'inbox'`. When no
+mailbox is specified the tool searches the entire account. Pass `mailboxName: "inbox"` (or
+any mailbox name/role) to reproduce the old behaviour.
+
+### `update_calendar_event` — CalDAV-only
+
+This tool requires CalDAV credentials (`FASTMAIL_CALDAV_USERNAME` /
+`FASTMAIL_CALDAV_PASSWORD`). It GETs the existing `.ics` file for the event, modifies only
+the fields you specify, and PUTs it back. Fields you omit are left exactly as they were.
 
 ## API Information
 

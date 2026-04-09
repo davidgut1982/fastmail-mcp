@@ -238,6 +238,120 @@ export class CalDAVCalendarClient {
     return null;
   }
 
+  /**
+   * Update an existing CalDAV calendar event by UID.
+   * Why: Allows patching a subset of event fields without replacing the entire event.
+   * What: GETs the raw ICS for the event, replaces only the provided fields in the
+   *       VEVENT block, then PUTs the modified ICS back to the same URL.
+   * Test: Create an event, call updateCalendarEvent with a new title, then
+   *       getCalendarEventById and assert the title changed while other fields are preserved.
+   */
+  async updateCalendarEvent(eventId: string, updates: {
+    title?: string;
+    description?: string;
+    start?: string;
+    end?: string;
+    location?: string;
+    participants?: string[];
+  }): Promise<CalendarEvent> {
+    const client = await this.getClient();
+
+    if (!this.calendars) {
+      this.calendars = await client.fetchCalendars();
+    }
+
+    // Find the calendar object matching the eventId (UID or URL)
+    let targetObj: DAVCalendarObject | null = null;
+    for (const cal of this.calendars) {
+      const objects = await client.fetchCalendarObjects({ calendar: cal });
+      for (const obj of objects) {
+        const vevent = extractVEvent(obj.data || '');
+        const uid = parseICalValue(vevent, 'UID');
+        if (uid === eventId || obj.url === eventId) {
+          targetObj = obj;
+          break;
+        }
+      }
+      if (targetObj) break;
+    }
+
+    if (!targetObj) {
+      throw new Error(`Calendar event not found: ${eventId}`);
+    }
+
+    const originalData = targetObj.data || '';
+
+    // Replace or set a property within the VEVENT block.
+    // If the property exists, replace it; otherwise insert before END:VEVENT.
+    const setVEventProp = (ics: string, key: string, value: string): string => {
+      // Remove any existing line(s) for this key (including folded continuations)
+      const keyPattern = new RegExp(`^${key}[;:].*(?:\\r?\\n[ \\t].*)*`, 'gm');
+      if (keyPattern.test(ics)) {
+        return ics.replace(keyPattern, `${key}:${value}`);
+      }
+      // Insert before END:VEVENT
+      return ics.replace(/END:VEVENT/, `${key}:${value}\r\nEND:VEVENT`);
+    };
+
+    let updatedIcs = originalData;
+
+    if (updates.title !== undefined) {
+      updatedIcs = setVEventProp(updatedIcs, 'SUMMARY', escapeICalText(updates.title));
+    }
+    if (updates.description !== undefined) {
+      updatedIcs = setVEventProp(updatedIcs, 'DESCRIPTION', escapeICalText(updates.description));
+    }
+    if (updates.location !== undefined) {
+      updatedIcs = setVEventProp(updatedIcs, 'LOCATION', escapeICalText(updates.location));
+    }
+    if (updates.start !== undefined) {
+      // Preserve existing DTSTART params (e.g. TZID) when replacing the value
+      const existingDtstart = originalData.match(/^(DTSTART[^:]*):.*$/m);
+      const dtstartKey = existingDtstart ? existingDtstart[1] : 'DTSTART';
+      const dtstartVal = updates.start.replace(/[-:]/g, '').replace(/\.\d{3}/, '');
+      updatedIcs = updatedIcs.replace(
+        /^DTSTART[^\r\n]*(\r?\n[ \t][^\r\n]*)*/m,
+        `${dtstartKey}:${dtstartVal}`
+      );
+    }
+    if (updates.end !== undefined) {
+      const existingDtend = originalData.match(/^(DTEND[^:]*):.*$/m);
+      const dtendKey = existingDtend ? existingDtend[1] : 'DTEND';
+      const dtendVal = updates.end.replace(/[-:]/g, '').replace(/\.\d{3}/, '');
+      updatedIcs = updatedIcs.replace(
+        /^DTEND[^\r\n]*(\r?\n[ \t][^\r\n]*)*/m,
+        `${dtendKey}:${dtendVal}`
+      );
+    }
+    if (updates.participants !== undefined) {
+      // Remove all existing ATTENDEE lines
+      updatedIcs = updatedIcs.replace(/^ATTENDEE[^\r\n]*(\r?\n[ \t][^\r\n]*)*/gm, '');
+      // Remove blank lines left behind
+      updatedIcs = updatedIcs.replace(/(\r?\n){2,}/g, '\r\n');
+      // Insert new ATTENDEE lines before END:VEVENT
+      const attendeeLines = updates.participants
+        .map(email => `ATTENDEE;CN=${email}:mailto:${email}`)
+        .join('\r\n');
+      if (attendeeLines) {
+        updatedIcs = updatedIcs.replace(/END:VEVENT/, `${attendeeLines}\r\nEND:VEVENT`);
+      }
+    }
+
+    // Bump DTSTAMP to now
+    const now = new Date().toISOString().replace(/[-:]/g, '').replace(/\.\d{3}/, '');
+    updatedIcs = updatedIcs.replace(/^DTSTAMP:.*$/m, `DTSTAMP:${now}`);
+
+    await client.updateCalendarObject({
+      calendarObject: {
+        url: targetObj.url,
+        data: updatedIcs,
+        etag: targetObj.etag,
+      },
+    });
+
+    return parseCalendarObject({ ...targetObj, data: updatedIcs });
+  }
+
   async createCalendarEvent(event: {
     calendarId: string;
     title: string;
