@@ -597,6 +597,11 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
               items: { type: 'string' },
               description: 'Replacement list of participant email addresses (optional; replaces all existing attendees)',
             },
+            attachments: {
+              type: 'array',
+              items: { type: 'string' },
+              description: 'Local file paths to attach to the event (images, PDFs). Embedded as base64 in the ICS.',
+            },
           },
           required: ['eventId'],
         },
@@ -1397,7 +1402,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       }
 
       case 'update_calendar_event': {
-        const { eventId, title, description, start, end, location, participants } = args as any;
+        const { eventId, title, description, start, end, location, participants, attachments } = args as any;
         if (!eventId) {
           throw new McpError(ErrorCode.InvalidParams, 'eventId is required');
         }
@@ -1406,7 +1411,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           throw new McpError(ErrorCode.InvalidRequest, 'CalDAV not configured. Set FASTMAIL_CALDAV_USERNAME and FASTMAIL_CALDAV_PASSWORD to use update_calendar_event.');
         }
         const updated = await davClient.updateCalendarEvent(eventId, {
-          title, description, start, end, location, participants,
+          title, description, start, end, location, participants, attachments,
         });
         return { content: [{ type: 'text', text: JSON.stringify(updated, null, 2) }] };
       }

@@ -253,6 +253,7 @@ export class CalDAVCalendarClient {
     end?: string;
     location?: string;
     participants?: string[];
+    attachments?: string[];
   }): Promise<CalendarEvent> {
     const client = await this.getClient();
 
@@ -335,6 +336,24 @@ export class CalDAVCalendarClient {
       if (attendeeLines) {
         updatedIcs = updatedIcs.replace(/END:VEVENT/, `${attendeeLines}\r\nEND:VEVENT`);
       }
+    }
+    if (updates.attachments !== undefined && updates.attachments.length > 0) {
+      // Remove existing ATTACH lines
+      updatedIcs = updatedIcs.replace(/^ATTACH[^\r\n]*(\r?\n[ \t][^\r\n]*)*/gm, '');
+      updatedIcs = updatedIcs.replace(/(\r?\n){2,}/g, '\r\n');
+      // Add new ATTACH lines before END:VEVENT
+      const fs = await import('fs');
+      const attachLines = updates.attachments.map(filePath => {
+        const ext = filePath.split('.').pop()?.toLowerCase() ?? 'bin';
+        const mimeMap: Record<string, string> = { jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', pdf: 'application/pdf', gif: 'image/gif' };
+        const mime = mimeMap[ext] ?? 'application/octet-stream';
+        const data = fs.readFileSync(filePath);
+        const b64 = data.toString('base64');
+        // Fold base64 at 75 chars per RFC 5545
+        const folded = b64.match(/.{1,75}/g)?.join('\r\n ') ?? b64;
+        return `ATTACH;ENCODING=BASE64;FMTTYPE=${mime}:\r\n ${folded}`;
+      }).join('\r\n');
+      updatedIcs = updatedIcs.replace(/END:VEVENT/, `${attachLines}\r\nEND:VEVENT`);
     }
 
     // Bump DTSTAMP to now
