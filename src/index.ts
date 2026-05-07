@@ -165,7 +165,7 @@ function buildToolsList() {
   return [
       {
         name: 'list_mailboxes',
-        description: 'List all mailboxes in the Fastmail account',
+        description: 'Lists mailboxes on the user\'s FASTMAIL/JMAP mail account. Use this tool ONLY when the user explicitly references Fastmail or JMAP. For Gmail/Google Workspace mail, use the google-workspace tools instead. Lists all mailboxes in the Fastmail account.',
         inputSchema: {
           type: 'object',
           properties: {},
@@ -173,7 +173,7 @@ function buildToolsList() {
       },
       {
         name: 'list_emails',
-        description: 'List emails from a mailbox',
+        description: 'Lists emails on the user\'s FASTMAIL/JMAP mail account. Use this tool ONLY when the user explicitly references Fastmail or JMAP. For Gmail/Google Workspace mail, use the google-workspace tools instead. Lists emails from a mailbox.',
         inputSchema: {
           type: 'object',
           properties: {
@@ -195,7 +195,7 @@ function buildToolsList() {
       },
       {
         name: 'get_email',
-        description: 'Get a specific email by ID',
+        description: 'Retrieves an email on the user\'s FASTMAIL/JMAP mail account. Use this tool ONLY when the user explicitly references Fastmail or JMAP. For Gmail/Google Workspace mail, use the google-workspace tools instead. Get a specific email by ID.',
         inputSchema: {
           type: 'object',
           properties: {
@@ -209,7 +209,7 @@ function buildToolsList() {
       },
       {
         name: 'send_email',
-        description: 'Send an email',
+        description: 'Sends an email via the user\'s FASTMAIL/JMAP mail account. Use this tool ONLY when the user explicitly references Fastmail or JMAP. For Gmail/Google Workspace mail, use the google-workspace tools instead. Send an email.',
         inputSchema: {
           type: 'object',
           properties: {
@@ -269,7 +269,7 @@ function buildToolsList() {
       },
       {
         name: 'reply_email',
-        description: 'Reply to an existing email with proper threading headers (In-Reply-To, References). Automatically fetches the original email to build the reply chain. By default sends immediately; set send=false to save as a draft instead.',
+        description: 'Replies to an email on the user\'s FASTMAIL/JMAP mail account. Use this tool ONLY when the user explicitly references Fastmail or JMAP. For Gmail/Google Workspace mail, use the google-workspace tools instead. Reply to an existing email with proper threading headers (In-Reply-To, References). Automatically fetches the original email to build the reply chain. By default sends immediately; set send=false to save as a draft instead.',
         inputSchema: {
           type: 'object',
           properties: {
@@ -319,7 +319,7 @@ function buildToolsList() {
       },
       {
         name: 'create_draft',
-        description: 'Create an email draft without sending it. Supports threading headers for replies. IMPORTANT: each call creates a new draft — do not call twice for the same message.',
+        description: 'Creates an email draft on the user\'s FASTMAIL/JMAP mail account. Use this tool ONLY when the user explicitly references Fastmail or JMAP. For Gmail/Google Workspace mail, use the google-workspace tools instead. Create an email draft without sending it. Supports threading headers for replies. IMPORTANT: each call creates a new draft — do not call twice for the same message.',
         inputSchema: {
           type: 'object',
           properties: {
@@ -378,7 +378,7 @@ function buildToolsList() {
       },
       {
         name: 'edit_draft',
-        description: 'Edit an existing draft email. Since JMAP emails are immutable, this atomically destroys the old draft and creates a new one with the updated fields. Only fields you provide will be changed; others are preserved from the original draft.',
+        description: 'Edits an email draft on the user\'s FASTMAIL/JMAP mail account. Use this tool ONLY when the user explicitly references Fastmail or JMAP. For Gmail/Google Workspace mail, use the google-workspace tools instead. Edit an existing draft email. Since JMAP emails are immutable, this atomically destroys the old draft and creates a new one with the updated fields. Only fields you provide will be changed; others are preserved from the original draft.',
         inputSchema: {
           type: 'object',
           properties: {
@@ -428,7 +428,7 @@ function buildToolsList() {
       },
       {
         name: 'send_draft',
-        description: 'Send an existing draft email. The draft must have recipients (to/cc/bcc) and a from address. After sending, the email is moved to the Sent folder and the draft keyword is removed.',
+        description: 'Sends a draft email on the user\'s FASTMAIL/JMAP mail account. Use this tool ONLY when the user explicitly references Fastmail or JMAP. For Gmail/Google Workspace mail, use the google-workspace tools instead. Send an existing draft email. The draft must have recipients (to/cc/bcc) and a from address. After sending, the email is moved to the Sent folder and the draft keyword is removed.',
         inputSchema: {
           type: 'object',
           properties: {
@@ -442,7 +442,7 @@ function buildToolsList() {
       },
       {
         name: 'search_emails',
-        description: 'Search emails by subject or content',
+        description: 'Searches emails on the user\'s FASTMAIL/JMAP mail account. Use this tool ONLY when the user explicitly references Fastmail or JMAP. For Gmail/Google Workspace mail, use the google-workspace tools instead. Search emails by subject or content.',
         inputSchema: {
           type: 'object',
           properties: {
@@ -465,7 +465,7 @@ function buildToolsList() {
       },
       {
         name: 'list_contacts',
-        description: 'List contacts from the address book',
+        description: 'Lists contacts in the user\'s FASTMAIL CardDAV address book. Use this tool ONLY when the user explicitly references Fastmail or CardDAV. For Google Contacts, use the google-workspace tools. List contacts from the address book.',
         inputSchema: {
           type: 'object',
           properties: {
@@ -479,7 +479,7 @@ function buildToolsList() {
       },
       {
         name: 'get_contact',
-        description: 'Get a specific contact by ID',
+        description: 'Retrieves a contact in the user\'s FASTMAIL CardDAV address book. Use this tool ONLY when the user explicitly references Fastmail or CardDAV. For Google Contacts, use the google-workspace tools. Get a specific contact by ID.',
         inputSchema: {
           type: 'object',
           properties: {
@@ -493,7 +493,7 @@ function buildToolsList() {
       },
       {
         name: 'search_contacts',
-        description: 'Search contacts by name or email',
+        description: 'Searches contacts in the user\'s FASTMAIL CardDAV address book. Use this tool ONLY when the user explicitly references Fastmail or CardDAV. For Google Contacts, use the google-workspace tools. Search contacts by name or email.',
         inputSchema: {
           type: 'object',
           properties: {
@@ -512,7 +512,7 @@ function buildToolsList() {
       },
       {
         name: 'list_calendars',
-        description: 'List all calendars',
+        description: 'Lists calendars on the user\'s FASTMAIL-HOSTED CalDAV calendars (JMAP/CalDAV provider). Use this tool ONLY when the user explicitly references Fastmail, CalDAV, JMAP, or their personal mail provider as Fastmail. For Google Calendar / Google Workspace events, use the google-workspace tools instead. List all calendars.',
         inputSchema: {
           type: 'object',
           properties: {},
@@ -520,7 +520,7 @@ function buildToolsList() {
       },
       {
         name: 'list_calendar_events',
-        description: `List events from a calendar. Datetime inputs (startDate/endDate) follow this rule: if a UTC suffix (Z) or explicit offset (+HH:MM / -HH:MM) is present, it is honored exactly. If omitted, the value is interpreted as wall-clock time in the user's configured timezone (currently: ${tz}). To query "Thursday morning" pass startDate="2026-05-07T00:00:00" and endDate="2026-05-07T12:00:00" without Z — these will resolve to the correct local-morning window for the user. Returned event \`start\` / \`end\` are formatted in the user's configured timezone (${tz}) with explicit offset (e.g. \`2026-05-07T09:00:00.000-04:00\`). Use these when reasoning about "morning" / "afternoon" / "evening" — those terms refer to the LOCAL time, not UTC. The original UTC instants are preserved in \`startUtc\` / \`endUtc\` for round-trips back to update_calendar_event. Each event also carries a \`timezone\` field naming the IANA zone. All-day events keep their date-only \`start\` / \`end\` and have no startUtc/endUtc.${forceLocalNote}`,
+        description: `Lists events on the user's FASTMAIL-HOSTED CalDAV calendars (JMAP/CalDAV provider). Use this tool ONLY when the user explicitly references Fastmail, CalDAV, JMAP, or their personal mail provider as Fastmail. For Google Calendar / Google Workspace events, use the google-workspace tools instead. List events from a calendar. Datetime inputs (startDate/endDate) follow this rule: if a UTC suffix (Z) or explicit offset (+HH:MM / -HH:MM) is present, it is honored exactly. If omitted, the value is interpreted as wall-clock time in the user's configured timezone (currently: ${tz}). To query "Thursday morning" pass startDate="2026-05-07T00:00:00" and endDate="2026-05-07T12:00:00" without Z — these will resolve to the correct local-morning window for the user. Returned event \`start\` / \`end\` are formatted in the user's configured timezone (${tz}) with explicit offset (e.g. \`2026-05-07T09:00:00.000-04:00\`). Use these when reasoning about "morning" / "afternoon" / "evening" — those terms refer to the LOCAL time, not UTC. The original UTC instants are preserved in \`startUtc\` / \`endUtc\` for round-trips back to update_calendar_event. Each event also carries a \`timezone\` field naming the IANA zone. All-day events keep their date-only \`start\` / \`end\` and have no startUtc/endUtc.${forceLocalNote}`,
         inputSchema: {
           type: 'object',
           properties: {
@@ -546,7 +546,7 @@ function buildToolsList() {
       },
       {
         name: 'get_calendar_event',
-        description: `Get a specific calendar event by ID. The returned event \`start\` / \`end\` are formatted in the user's configured timezone (${tz}) with explicit offset (e.g. \`2026-05-07T09:00:00.000-04:00\`). Use these when reasoning about "morning" / "afternoon" / "evening" — those terms refer to the LOCAL time, not UTC. The original UTC instants are preserved in \`startUtc\` / \`endUtc\` for round-trips. All-day events keep their date-only \`start\` / \`end\` and have no startUtc/endUtc.${forceLocalNote}`,
+        description: `Retrieves an event on the user's FASTMAIL-HOSTED CalDAV calendars (JMAP/CalDAV provider). Use this tool ONLY when the user explicitly references Fastmail, CalDAV, JMAP, or their personal mail provider as Fastmail. For Google Calendar / Google Workspace events, use the google-workspace tools instead. Get a specific calendar event by ID. The returned event \`start\` / \`end\` are formatted in the user's configured timezone (${tz}) with explicit offset (e.g. \`2026-05-07T09:00:00.000-04:00\`). Use these when reasoning about "morning" / "afternoon" / "evening" — those terms refer to the LOCAL time, not UTC. The original UTC instants are preserved in \`startUtc\` / \`endUtc\` for round-trips. All-day events keep their date-only \`start\` / \`end\` and have no startUtc/endUtc.${forceLocalNote}`,
         inputSchema: {
           type: 'object',
           properties: {
@@ -560,7 +560,7 @@ function buildToolsList() {
       },
       {
         name: 'create_calendar_event',
-        description: `Create a new calendar event. Datetime inputs (start/end) follow this rule: if a UTC suffix (Z) or explicit offset (+HH:MM / -HH:MM) is present, it is honored exactly. If omitted, the value is interpreted as wall-clock time in the user's configured timezone (currently: ${tz}). To create a 9 AM local meeting, pass start="2026-05-07T09:00:00" without Z. The CalDAV-fallback response returns the created event's UID; use get_calendar_event to fetch its full localized form (\`start\` / \`end\` in ${tz} with explicit offset, \`startUtc\` / \`endUtc\` preserving the UTC instant, plus a \`timezone\` field).${forceLocalNote}`,
+        description: `Creates an event on the user's FASTMAIL-HOSTED CalDAV calendars (JMAP/CalDAV provider). Use this tool ONLY when the user explicitly references Fastmail, CalDAV, JMAP, or their personal mail provider as Fastmail. For Google Calendar / Google Workspace events, use the google-workspace tools instead. Create a new calendar event. Datetime inputs (start/end) follow this rule: if a UTC suffix (Z) or explicit offset (+HH:MM / -HH:MM) is present, it is honored exactly. If omitted, the value is interpreted as wall-clock time in the user's configured timezone (currently: ${tz}). To create a 9 AM local meeting, pass start="2026-05-07T09:00:00" without Z. The CalDAV-fallback response returns the created event's UID; use get_calendar_event to fetch its full localized form (\`start\` / \`end\` in ${tz} with explicit offset, \`startUtc\` / \`endUtc\` preserving the UTC instant, plus a \`timezone\` field).${forceLocalNote}`,
         inputSchema: {
           type: 'object',
           properties: {
@@ -605,7 +605,7 @@ function buildToolsList() {
       },
       {
         name: 'update_calendar_event',
-        description: `Update an existing calendar event. Only fields you provide are changed; all other fields are preserved unchanged. Datetime inputs (start/end) follow this rule: if a UTC suffix (Z) or explicit offset (+HH:MM / -HH:MM) is present, it is honored exactly. If omitted, the value is interpreted as wall-clock time in the user's configured timezone (currently: ${tz}). The returned event has \`start\` / \`end\` formatted in ${tz} with explicit offset (e.g. \`2026-05-07T09:00:00.000-04:00\`); the original UTC instants are preserved in \`startUtc\` / \`endUtc\`, plus a \`timezone\` field. Use these when reasoning about "morning" / "afternoon" / "evening" — those terms refer to the LOCAL time, not UTC.${forceLocalNote}`,
+        description: `Updates an event on the user's FASTMAIL-HOSTED CalDAV calendars (JMAP/CalDAV provider). Use this tool ONLY when the user explicitly references Fastmail, CalDAV, JMAP, or their personal mail provider as Fastmail. For Google Calendar / Google Workspace events, use the google-workspace tools instead. Update an existing calendar event. Only fields you provide are changed; all other fields are preserved unchanged. Datetime inputs (start/end) follow this rule: if a UTC suffix (Z) or explicit offset (+HH:MM / -HH:MM) is present, it is honored exactly. If omitted, the value is interpreted as wall-clock time in the user's configured timezone (currently: ${tz}). The returned event has \`start\` / \`end\` formatted in ${tz} with explicit offset (e.g. \`2026-05-07T09:00:00.000-04:00\`); the original UTC instants are preserved in \`startUtc\` / \`endUtc\`, plus a \`timezone\` field. Use these when reasoning about "morning" / "afternoon" / "evening" — those terms refer to the LOCAL time, not UTC.${forceLocalNote}`,
         inputSchema: {
           type: 'object',
           properties: {
@@ -649,7 +649,7 @@ function buildToolsList() {
       },
       {
         name: 'list_identities',
-        description: 'List sending identities (email addresses that can be used for sending)',
+        description: 'Lists sending identities on the user\'s FASTMAIL/JMAP mail account. Use this tool ONLY when the user explicitly references Fastmail or JMAP. For Gmail/Google Workspace mail, use the google-workspace tools instead. List sending identities (email addresses that can be used for sending).',
         inputSchema: {
           type: 'object',
           properties: {},
@@ -657,7 +657,7 @@ function buildToolsList() {
       },
       {
         name: 'get_recent_emails',
-        description: 'Get the most recent emails. Searches all mail by default; pass mailboxName to restrict to a specific mailbox.',
+        description: 'Retrieves recent emails on the user\'s FASTMAIL/JMAP mail account. Use this tool ONLY when the user explicitly references Fastmail or JMAP. For Gmail/Google Workspace mail, use the google-workspace tools instead. Get the most recent emails. Searches all mail by default; pass mailboxName to restrict to a specific mailbox.',
         inputSchema: {
           type: 'object',
           properties: {
@@ -679,7 +679,7 @@ function buildToolsList() {
       },
       {
         name: 'mark_email_read',
-        description: 'Mark an email as read or unread',
+        description: 'Updates an email\'s read/unread state on the user\'s FASTMAIL/JMAP mail account. Use this tool ONLY when the user explicitly references Fastmail or JMAP. For Gmail/Google Workspace mail, use the google-workspace tools instead. Mark an email as read or unread.',
         inputSchema: {
           type: 'object',
           properties: {
@@ -698,7 +698,7 @@ function buildToolsList() {
       },
       {
         name: 'pin_email',
-        description: 'Pin or unpin an email',
+        description: 'Pins or unpins an email on the user\'s FASTMAIL/JMAP mail account. Use this tool ONLY when the user explicitly references Fastmail or JMAP. For Gmail/Google Workspace mail, use the google-workspace tools instead. Pin or unpin an email.',
         inputSchema: {
           type: 'object',
           properties: {
@@ -717,7 +717,7 @@ function buildToolsList() {
       },
       {
         name: 'delete_email',
-        description: 'Delete an email (move to trash)',
+        description: 'Deletes an email on the user\'s FASTMAIL/JMAP mail account. Use this tool ONLY when the user explicitly references Fastmail or JMAP. For Gmail/Google Workspace mail, use the google-workspace tools instead. Delete an email (move to trash).',
         inputSchema: {
           type: 'object',
           properties: {
@@ -731,7 +731,7 @@ function buildToolsList() {
       },
       {
         name: 'move_email',
-        description: 'Move an email to a different mailbox',
+        description: 'Moves an email on the user\'s FASTMAIL/JMAP mail account. Use this tool ONLY when the user explicitly references Fastmail or JMAP. For Gmail/Google Workspace mail, use the google-workspace tools instead. Move an email to a different mailbox.',
         inputSchema: {
           type: 'object',
           properties: {
@@ -749,7 +749,7 @@ function buildToolsList() {
       },
       {
         name: 'add_labels',
-        description: 'Add labels (mailboxes) to an email without removing existing ones',
+        description: 'Adds labels to an email on the user\'s FASTMAIL/JMAP mail account. Use this tool ONLY when the user explicitly references Fastmail or JMAP. For Gmail/Google Workspace mail, use the google-workspace tools instead. Add labels (mailboxes) to an email without removing existing ones.',
         inputSchema: {
           type: 'object',
           properties: {
@@ -768,7 +768,7 @@ function buildToolsList() {
       },
       {
         name: 'remove_labels',
-        description: 'Remove specific labels (mailboxes) from an email',
+        description: 'Removes labels from an email on the user\'s FASTMAIL/JMAP mail account. Use this tool ONLY when the user explicitly references Fastmail or JMAP. For Gmail/Google Workspace mail, use the google-workspace tools instead. Remove specific labels (mailboxes) from an email.',
         inputSchema: {
           type: 'object',
           properties: {
@@ -787,7 +787,7 @@ function buildToolsList() {
       },
       {
         name: 'get_email_attachments',
-        description: 'Get list of attachments for an email',
+        description: 'Lists attachments for an email on the user\'s FASTMAIL/JMAP mail account. Use this tool ONLY when the user explicitly references Fastmail or JMAP. For Gmail/Google Workspace mail, use the google-workspace tools instead. Get list of attachments for an email.',
         inputSchema: {
           type: 'object',
           properties: {
@@ -801,7 +801,7 @@ function buildToolsList() {
       },
       {
         name: 'download_attachment',
-        description: 'Download an email attachment. If savePath is provided, saves the file to disk and returns the file path and size. Otherwise returns a download URL.',
+        description: 'Downloads an attachment from an email on the user\'s FASTMAIL/JMAP mail account. Use this tool ONLY when the user explicitly references Fastmail or JMAP. For Gmail/Google Workspace mail, use the google-workspace tools instead. Download an email attachment. If savePath is provided, saves the file to disk and returns the file path and size. Otherwise returns a download URL.',
         inputSchema: {
           type: 'object',
           properties: {
@@ -823,7 +823,7 @@ function buildToolsList() {
       },
       {
         name: 'advanced_search',
-        description: `Advanced email search with multiple criteria. Datetime inputs (after/before) follow this rule: if a UTC suffix (Z) or explicit offset (+HH:MM / -HH:MM) is present, it is honored exactly. If omitted, the value is interpreted as wall-clock time in the user's configured timezone (currently: ${tz}).${forceLocalNote}`,
+        description: `Searches emails on the user's FASTMAIL/JMAP mail account. Use this tool ONLY when the user explicitly references Fastmail or JMAP. For Gmail/Google Workspace mail, use the google-workspace tools instead. Advanced email search with multiple criteria. Datetime inputs (after/before) follow this rule: if a UTC suffix (Z) or explicit offset (+HH:MM / -HH:MM) is present, it is honored exactly. If omitted, the value is interpreted as wall-clock time in the user's configured timezone (currently: ${tz}).${forceLocalNote}`,
         inputSchema: {
           type: 'object',
           properties: {
@@ -881,7 +881,7 @@ function buildToolsList() {
       },
       {
         name: 'get_thread',
-        description: 'Get all emails in a conversation thread',
+        description: 'Retrieves a conversation thread on the user\'s FASTMAIL/JMAP mail account. Use this tool ONLY when the user explicitly references Fastmail or JMAP. For Gmail/Google Workspace mail, use the google-workspace tools instead. Get all emails in a conversation thread.',
         inputSchema: {
           type: 'object',
           properties: {
@@ -895,7 +895,7 @@ function buildToolsList() {
       },
       {
         name: 'get_mailbox_stats',
-        description: 'Get statistics for a mailbox (unread count, total emails, etc.)',
+        description: 'Retrieves mailbox statistics on the user\'s FASTMAIL/JMAP mail account. Use this tool ONLY when the user explicitly references Fastmail or JMAP. For Gmail/Google Workspace mail, use the google-workspace tools instead. Get statistics for a mailbox (unread count, total emails, etc.).',
         inputSchema: {
           type: 'object',
           properties: {
@@ -908,7 +908,7 @@ function buildToolsList() {
       },
       {
         name: 'get_account_summary',
-        description: 'Get overall account summary with statistics',
+        description: 'Retrieves account summary on the user\'s FASTMAIL/JMAP mail account. Use this tool ONLY when the user explicitly references Fastmail or JMAP. For Gmail/Google Workspace mail, use the google-workspace tools instead. Get overall account summary with statistics.',
         inputSchema: {
           type: 'object',
           properties: {},
@@ -916,7 +916,7 @@ function buildToolsList() {
       },
       {
         name: 'bulk_mark_read',
-        description: 'Mark multiple emails as read/unread',
+        description: 'Bulk-updates read state for emails on the user\'s FASTMAIL/JMAP mail account. Use this tool ONLY when the user explicitly references Fastmail or JMAP. For Gmail/Google Workspace mail, use the google-workspace tools instead. Mark multiple emails as read/unread.',
         inputSchema: {
           type: 'object',
           properties: {
@@ -936,7 +936,7 @@ function buildToolsList() {
       },
       {
         name: 'bulk_pin',
-        description: 'Pin or unpin multiple emails',
+        description: 'Bulk-pins emails on the user\'s FASTMAIL/JMAP mail account. Use this tool ONLY when the user explicitly references Fastmail or JMAP. For Gmail/Google Workspace mail, use the google-workspace tools instead. Pin or unpin multiple emails.',
         inputSchema: {
           type: 'object',
           properties: {
@@ -956,7 +956,7 @@ function buildToolsList() {
       },
       {
         name: 'bulk_move',
-        description: 'Move multiple emails to a mailbox',
+        description: 'Bulk-moves emails on the user\'s FASTMAIL/JMAP mail account. Use this tool ONLY when the user explicitly references Fastmail or JMAP. For Gmail/Google Workspace mail, use the google-workspace tools instead. Move multiple emails to a mailbox.',
         inputSchema: {
           type: 'object',
           properties: {
@@ -975,7 +975,7 @@ function buildToolsList() {
       },
       {
         name: 'bulk_delete',
-        description: 'Delete multiple emails (move to trash)',
+        description: 'Bulk-deletes emails on the user\'s FASTMAIL/JMAP mail account. Use this tool ONLY when the user explicitly references Fastmail or JMAP. For Gmail/Google Workspace mail, use the google-workspace tools instead. Delete multiple emails (move to trash).',
         inputSchema: {
           type: 'object',
           properties: {
@@ -990,7 +990,7 @@ function buildToolsList() {
       },
       {
         name: 'bulk_add_labels',
-        description: 'Add labels to multiple emails simultaneously',
+        description: 'Bulk-adds labels to emails on the user\'s FASTMAIL/JMAP mail account. Use this tool ONLY when the user explicitly references Fastmail or JMAP. For Gmail/Google Workspace mail, use the google-workspace tools instead. Add labels to multiple emails simultaneously.',
         inputSchema: {
           type: 'object',
           properties: {
@@ -1010,7 +1010,7 @@ function buildToolsList() {
       },
       {
         name: 'bulk_remove_labels',
-        description: 'Remove labels from multiple emails simultaneously',
+        description: 'Bulk-removes labels from emails on the user\'s FASTMAIL/JMAP mail account. Use this tool ONLY when the user explicitly references Fastmail or JMAP. For Gmail/Google Workspace mail, use the google-workspace tools instead. Remove labels from multiple emails simultaneously.',
         inputSchema: {
           type: 'object',
           properties: {
