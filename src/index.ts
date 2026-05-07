@@ -1,6 +1,9 @@
 #!/usr/bin/env node
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
+import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
+import express from 'express';
+import { randomUUID } from 'crypto';
 import {
   CallToolRequestSchema,
   ErrorCode,
@@ -11,18 +14,27 @@ import { FastmailAuth, FastmailConfig } from './auth.js';
 import { JmapClient } from './jmap-client.js';
 import { ContactsCalendarClient } from './contacts-calendar.js';
 import { CalDAVCalendarClient } from './caldav-client.js';
+import { resolveDateInput, resolveDefaultTimezone } from './timezone.js';
 
-const server = new Server(
-  {
-    name: 'fastmail-mcp',
-    version: '1.9.1',
-  },
-  {
-    capabilities: {
-      tools: {},
+// Factory: builds a fresh Server instance with all request handlers attached.
+// Used per-session for the StreamableHTTP transport (each transport must be
+// connected to its own Server — calling server.connect() twice throws
+// "Already connected to a transport"), and once for stdio mode.
+function createServer(): Server {
+  const server = new Server(
+    {
+      name: 'fastmail-mcp',
+      version: '1.9.1',
     },
-  }
-);
+    {
+      capabilities: {
+        tools: {},
+      },
+    }
+  );
+  registerHandlers(server);
+  return server;
+}
 
 let jmapClient: JmapClient | null = null;
 let contactsCalendarClient: ContactsCalendarClient | null = null;
@@ -119,7 +131,12 @@ function getDownloadDir(): string | undefined {
   ]).value;
 }
 
+function registerHandlers(server: Server): void {
 server.setRequestHandler(ListToolsRequestSchema, async () => {
+  // Resolve once per ListTools response so the tool descriptions advertise
+  // the actual configured timezone the agent's naive datetimes will be
+  // interpreted in. Cached after first call, so cheap to invoke.
+  const tz = resolveDefaultTimezone();
   return {
     tools: [
       {
@@ -479,7 +496,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       },
       {
         name: 'list_calendar_events',
-        description: 'List events from a calendar',
+        description: `List events from a calendar. Datetime inputs (startDate/endDate) follow this rule: if a UTC suffix (Z) or explicit offset (+HH:MM / -HH:MM) is present, it is honored exactly. If omitted, the value is interpreted as wall-clock time in the user's configured timezone (currently: ${tz}). To query "Thursday morning" pass startDate="2026-05-07T00:00:00" and endDate="2026-05-07T12:00:00" without Z — these will resolve to the correct local-morning window for the user.`,
         inputSchema: {
           type: 'object',
           properties: {
@@ -489,11 +506,11 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
             },
             startDate: {
               type: 'string',
-              description: 'Filter events starting from this date (ISO 8601, e.g. 2026-03-23T00:00:00Z)',
+              description: `Filter events starting from this date (ISO 8601). Naive inputs (no Z/offset) are interpreted in the user's configured timezone (${tz}). Examples: "2026-03-23T00:00:00" (local ${tz}), "2026-03-23T00:00:00Z" (UTC), "2026-03-23T00:00:00-05:00" (explicit CDT-style offset).`,
             },
             endDate: {
               type: 'string',
-              description: 'Filter events ending before this date (ISO 8601, e.g. 2026-03-30T00:00:00Z)',
+              description: `Filter events ending before this date (ISO 8601). Naive inputs (no Z/offset) are interpreted in the user's configured timezone (${tz}). Examples: "2026-03-30T00:00:00" (local ${tz}), "2026-03-30T00:00:00Z" (UTC).`,
             },
             limit: {
               type: 'number',
@@ -519,7 +536,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       },
       {
         name: 'create_calendar_event',
-        description: 'Create a new calendar event',
+        description: `Create a new calendar event. Datetime inputs (start/end) follow this rule: if a UTC suffix (Z) or explicit offset (+HH:MM / -HH:MM) is present, it is honored exactly. If omitted, the value is interpreted as wall-clock time in the user's configured timezone (currently: ${tz}). To create a 9 AM local meeting, pass start="2026-05-07T09:00:00" without Z.`,
         inputSchema: {
           type: 'object',
           properties: {
@@ -537,11 +554,11 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
             },
             start: {
               type: 'string',
-              description: 'Start time in ISO 8601 format',
+              description: `Start time (ISO 8601). Naive inputs (no Z/offset) are interpreted in the user's configured timezone (${tz}). Examples: "2026-05-07T09:00:00" (9 AM local ${tz}), "2026-05-07T13:00:00Z" (1 PM UTC).`,
             },
             end: {
               type: 'string',
-              description: 'End time in ISO 8601 format',
+              description: `End time (ISO 8601). Naive inputs (no Z/offset) are interpreted in the user's configured timezone (${tz}).`,
             },
             location: {
               type: 'string',
@@ -564,7 +581,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       },
       {
         name: 'update_calendar_event',
-        description: 'Update an existing calendar event. Only fields you provide are changed; all other fields are preserved unchanged.',
+        description: `Update an existing calendar event. Only fields you provide are changed; all other fields are preserved unchanged. Datetime inputs (start/end) follow this rule: if a UTC suffix (Z) or explicit offset (+HH:MM / -HH:MM) is present, it is honored exactly. If omitted, the value is interpreted as wall-clock time in the user's configured timezone (currently: ${tz}).`,
         inputSchema: {
           type: 'object',
           properties: {
@@ -582,11 +599,11 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
             },
             start: {
               type: 'string',
-              description: 'New start time in ISO 8601 format (optional)',
+              description: `New start time (ISO 8601, optional). Naive inputs (no Z/offset) are interpreted in the user's configured timezone (${tz}).`,
             },
             end: {
               type: 'string',
-              description: 'New end time in ISO 8601 format (optional)',
+              description: `New end time (ISO 8601, optional). Naive inputs (no Z/offset) are interpreted in the user's configured timezone (${tz}).`,
             },
             location: {
               type: 'string',
@@ -820,11 +837,11 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
             },
             after: {
               type: 'string',
-              description: 'Emails after this date (ISO 8601)',
+              description: `Emails after this date (ISO 8601). Naive inputs (no Z/offset) are interpreted in the user's configured timezone (${tz}).`,
             },
             before: {
               type: 'string',
-              description: 'Emails before this date (ISO 8601)',
+              description: `Emails before this date (ISO 8601). Naive inputs (no Z/offset) are interpreted in the user's configured timezone (${tz}).`,
             },
             limit: {
               type: 'number',
@@ -1383,22 +1400,28 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         if (!calendarId || !title || !start || !end) {
           throw new McpError(ErrorCode.InvalidParams, 'calendarId, title, start, and end are required');
         }
+        // Try JMAP first; if JMAP fails, fall back to CalDAV. CalDAV errors
+        // MUST propagate (do NOT swallow them and report fake success).
+        let jmapErr: unknown = null;
         try {
           const contactsClient = initializeContactsCalendarClient();
           const eventId = await contactsClient.createCalendarEvent({
             calendarId, title, description, start, end, location, participants,
           });
           return { content: [{ type: 'text', text: `Calendar event created successfully. Event ID: ${eventId}` }] };
-        } catch {
-          const davClient = initializeCalDAVClient();
-          if (!davClient) {
-            throw new McpError(ErrorCode.InvalidRequest, 'JMAP calendars not available and CalDAV not configured. Set FASTMAIL_CALDAV_USERNAME and FASTMAIL_CALDAV_PASSWORD to use CalDAV.');
-          }
-          const eventId = await davClient.createCalendarEvent({
-            calendarId, title, description, start, end, location,
-          });
-          return { content: [{ type: 'text', text: `Calendar event created via CalDAV. Event ID: ${eventId}` }] };
+        } catch (e) {
+          jmapErr = e;
         }
+        const davClient = initializeCalDAVClient();
+        if (!davClient) {
+          throw new McpError(ErrorCode.InvalidRequest, 'JMAP calendars not available and CalDAV not configured. Set FASTMAIL_CALDAV_USERNAME and FASTMAIL_CALDAV_PASSWORD to use CalDAV.');
+        }
+        // Let CalDAV exceptions bubble up — do NOT wrap in another try/catch
+        // that would swallow them and return fake success.
+        const eventId = await davClient.createCalendarEvent({
+          calendarId, title, description, start, end, location,
+        });
+        return { content: [{ type: 'text', text: `Calendar event created via CalDAV. Event ID: ${eventId}` }] };
       }
 
       case 'update_calendar_event': {
@@ -1612,9 +1635,17 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
       case 'advanced_search': {
         const { query, from, to, subject, hasAttachment, isUnread, isPinned, mailboxId, after, before, limit, ascending } = args as any;
+        // Why: JMAP's `before`/`after` filters interpret naive ISO datetimes
+        // as UTC. The TZ-aware refactor for calendar tools must extend here
+        // too so that "emails after 2026-05-07" means "after 2026-05-07
+        // 00:00 in the user's local zone", not "after 04:00Z" (the previous
+        // behavior) or "after 00:00Z". Honors explicit Z/offsets when present.
+        const normalizedAfter = after ? resolveDateInput(after) : undefined;
+        const normalizedBefore = before ? resolveDateInput(before) : undefined;
         const client = initializeClient();
         const emails = await client.advancedSearch({
-          query, from, to, subject, hasAttachment, isUnread, isPinned, mailboxId, after, before, limit, ascending
+          query, from, to, subject, hasAttachment, isUnread, isPinned, mailboxId,
+          after: normalizedAfter, before: normalizedBefore, limit, ascending,
         });
         return {
           content: [
@@ -1957,11 +1988,87 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     );
   }
 });
+}  // end registerHandlers
 
 async function runServer() {
-  const transport = new StdioServerTransport();
-  await server.connect(transport);
-  console.error('Fastmail MCP server running on stdio');
+  // Resolve and log the configured default timezone before doing any work,
+  // so the chosen zone (and its source) is visible in service logs even if
+  // no calendar/email request is ever made. This is the operator's confirmation
+  // that the TZ wiring took effect — without it, debugging "why did naive
+  // datetimes still get parsed as UTC?" requires guessing.
+  resolveDefaultTimezone();
+
+  const args = process.argv.slice(2);
+  const transportIdx = args.indexOf('--transport');
+  const transportType = transportIdx >= 0 ? args[transportIdx + 1] : 'stdio';
+  const portIdx = args.indexOf('--port');
+  const httpPort = portIdx >= 0 ? parseInt(args[portIdx + 1], 10) : 8001;
+
+  if (transportType === 'http' || transportType === 'streamable-http') {
+    // HTTP transport mode — stateful per-session pattern (MCP SDK standard).
+    // Each session gets its own StreamableHTTPServerTransport AND its own
+    // Server instance. The MCP SDK Server cannot be connected to more than
+    // one transport ("Already connected to a transport" error), so we cannot
+    // share a single global server across sessions.
+    const app = express();
+    app.use(express.json());
+
+    const transports: Record<string, StreamableHTTPServerTransport> = {};
+
+    app.all('/mcp', async (req, res) => {
+      try {
+        const sessionId = req.headers['mcp-session-id'] as string | undefined;
+        let transport: StreamableHTTPServerTransport;
+
+        if (sessionId && transports[sessionId]) {
+          // Existing session — reuse its transport (already connected to a server).
+          transport = transports[sessionId];
+        } else if (!sessionId && req.method === 'POST' && req.body?.method === 'initialize') {
+          // New session — create a fresh transport AND a fresh Server, connect
+          // them, store the transport keyed by session ID once initialization
+          // completes.
+          transport = new StreamableHTTPServerTransport({
+            sessionIdGenerator: () => randomUUID(),
+            onsessioninitialized: (sid) => {
+              transports[sid] = transport;
+            },
+          });
+          transport.onclose = () => {
+            if (transport.sessionId) delete transports[transport.sessionId];
+          };
+          const sessionServer = createServer();
+          await sessionServer.connect(transport);
+        } else {
+          res.status(400).json({
+            jsonrpc: '2.0',
+            error: { code: -32000, message: 'Bad Request: No valid session ID provided' },
+            id: null,
+          });
+          return;
+        }
+
+        await transport.handleRequest(req, res, req.body);
+      } catch (err) {
+        if (!res.headersSent) {
+          res.status(500).json({
+            jsonrpc: '2.0',
+            error: { code: -32603, message: 'Internal server error' },
+            id: null,
+          });
+        }
+      }
+    });
+
+    app.listen(httpPort, '127.0.0.1', () => {
+      console.error(`Fastmail MCP server running on HTTP port ${httpPort}`);
+    });
+  } else {
+    // stdio transport (default, backward-compatible) — single server instance.
+    const stdioServer = createServer();
+    const transport = new StdioServerTransport();
+    await stdioServer.connect(transport);
+    console.error('Fastmail MCP server running on stdio');
+  }
 }
 
 runServer().catch(() => {

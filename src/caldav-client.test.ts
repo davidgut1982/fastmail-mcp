@@ -1,4 +1,4 @@
-import { describe, it, mock } from 'node:test';
+import { describe, it, mock, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   extractVEvent,
@@ -9,6 +9,10 @@ import {
   escapeICalText,
   CalDAVCalendarClient,
 } from './caldav-client.js';
+import {
+  resolveDateInput,
+  __resetTimezoneCacheForTests,
+} from './timezone.js';
 
 describe('extractVEvent', () => {
   it('extracts VEVENT block from iCalendar data', () => {
@@ -810,5 +814,157 @@ END:VCALENDAR]]></C:calendar-data>
 
     const callArgs = mockDAVClient.fetchCalendarObjects.mock.calls[0].arguments[0];
     assert.equal(callArgs.timeRange, undefined);
+  });
+});
+
+/**
+ * Why: The Bunge symptom motivated the TZ-aware refactor. The agent passes
+ * naive datetimes ("2026-05-07T00:00:00") to mean "Thursday morning local";
+ * before this work they were silently parsed as UTC and missed the user's
+ * 09:00 EDT (= 13:00 UTC) recurring meeting. These four tests pin down the
+ * resolution rules and the regression so a future refactor can't reintroduce
+ * the bug.
+ */
+describe('Timezone-aware datetime resolution', () => {
+  // Each test sets its own FASTMAIL_TIMEZONE and resets the module's cache
+  // so the resolved zone is fresh per test. Save and restore env to avoid
+  // bleeding state into unrelated tests.
+  let savedFmTz: string | undefined;
+  let savedTz: string | undefined;
+  before(() => {
+    savedFmTz = process.env.FASTMAIL_TIMEZONE;
+    savedTz = process.env.TZ;
+  });
+  after(() => {
+    if (savedFmTz === undefined) delete process.env.FASTMAIL_TIMEZONE;
+    else process.env.FASTMAIL_TIMEZONE = savedFmTz;
+    if (savedTz === undefined) delete process.env.TZ;
+    else process.env.TZ = savedTz;
+    __resetTimezoneCacheForTests();
+  });
+
+  it('(a) resolves naive datetime in America/New_York to UTC (EDT in May = UTC-4)', () => {
+    process.env.FASTMAIL_TIMEZONE = 'America/New_York';
+    delete process.env.TZ;
+    __resetTimezoneCacheForTests();
+    // 2026-05-07 falls in EDT (DST is in effect in May), so 00:00 local = 04:00Z.
+    // luxon emits ISO with millisecond precision; assert the instant equality
+    // rather than the exact string so a future formatting tweak doesn't break us.
+    const resolved = resolveDateInput('2026-05-07T00:00:00');
+    assert.equal(
+      Date.parse(resolved),
+      Date.parse('2026-05-07T04:00:00Z'),
+      `naive 2026-05-07T00:00:00 in America/New_York should resolve to 2026-05-07T04:00:00Z, got ${resolved}`,
+    );
+  });
+
+  it('(b) preserves Z-suffixed input regardless of default TZ', () => {
+    // Set default TZ to something exotic to prove the explicit Z wins.
+    process.env.FASTMAIL_TIMEZONE = 'America/New_York';
+    delete process.env.TZ;
+    __resetTimezoneCacheForTests();
+    const resolved = resolveDateInput('2026-05-07T00:00:00Z');
+    assert.equal(
+      Date.parse(resolved),
+      Date.parse('2026-05-07T00:00:00Z'),
+      `Z-suffixed input must be preserved as the same UTC instant, got ${resolved}`,
+    );
+  });
+
+  it('(c) honors explicit -05:00 offset regardless of default TZ', () => {
+    process.env.FASTMAIL_TIMEZONE = 'America/New_York';
+    delete process.env.TZ;
+    __resetTimezoneCacheForTests();
+    // -05:00 means the wall-clock 00:00 is 5 hours behind UTC → UTC is 05:00Z.
+    const resolved = resolveDateInput('2026-05-07T00:00:00-05:00');
+    assert.equal(
+      Date.parse(resolved),
+      Date.parse('2026-05-07T05:00:00Z'),
+      `offset -05:00 input must resolve to 2026-05-07T05:00:00Z, got ${resolved}`,
+    );
+  });
+
+  it('(d) Bunge regression: 13:00Z event IS included in naive 00:00→12:00 query with America/New_York default TZ', async () => {
+    // The acceptance criterion. Naive 00:00 → 12:00 in EDT = 04:00Z → 16:00Z,
+    // and the recurring Bunge meeting at 13:00Z (= 09:00 EDT) falls inside.
+    process.env.FASTMAIL_TIMEZONE = 'America/New_York';
+    delete process.env.TZ;
+    __resetTimezoneCacheForTests();
+
+    const client = new CalDAVCalendarClient({ username: 'test', password: 'test' });
+    const personalCal = { displayName: 'Personal', url: 'https://caldav.example/cal/personal/' };
+    const mockDAVClient = {
+      login: mock.fn(async () => {}),
+      fetchCalendars: mock.fn(async () => [personalCal]),
+      fetchCalendarObjects: mock.fn(async () => []),
+    };
+    (client as any).client = mockDAVClient;
+
+    // Capture the REPORT body so we can assert the bounds the server received.
+    const fetchCalls: any[] = [];
+    const expandedXml = `<?xml version="1.0" encoding="utf-8"?>
+<D:multistatus xmlns:D="DAV:" xmlns:C="urn:ietf:params:xml:ns:caldav">
+  <D:response>
+    <D:href>/cal/personal/bunge.ics</D:href>
+    <D:propstat>
+      <D:prop>
+        <C:calendar-data><![CDATA[BEGIN:VCALENDAR
+BEGIN:VEVENT
+UID:bunge@fm
+SUMMARY:David Bunge Meeting
+DTSTART:20260507T130000Z
+DTEND:20260507T140000Z
+RECURRENCE-ID:20260507T130000Z
+END:VEVENT
+END:VCALENDAR]]></C:calendar-data>
+      </D:prop>
+    </D:propstat>
+  </D:response>
+</D:multistatus>`;
+    const originalFetch = globalThis.fetch;
+    (globalThis as any).fetch = async (url: string, init: any) => {
+      fetchCalls.push({ url, init });
+      return {
+        ok: true,
+        status: 200,
+        statusText: 'OK',
+        text: async () => expandedXml,
+      };
+    };
+
+    try {
+      // Pass the agent's "Thursday morning" exactly as it would today: naive,
+      // no Z, no offset. With the TZ-aware resolution wired in, this should
+      // become a 04:00Z → 16:00Z window.
+      const events = await client.getCalendarEvents(
+        undefined,
+        50,
+        '2026-05-07T00:00:00',
+        '2026-05-07T12:00:00',
+      );
+
+      // Verify the server received the EDT-shifted UTC bounds, not the naive
+      // strings interpreted as UTC.
+      assert.equal(fetchCalls.length, 1, 'expected exactly one REPORT request');
+      const body = fetchCalls[0].init.body as string;
+      assert.match(
+        body,
+        /<C:expand\s+start="20260507T040000Z"\s+end="20260507T160000Z"\s*\/>/,
+        `expected expand bounds 04:00Z → 16:00Z (EDT-shifted from naive 00:00→12:00), got body: ${body}`,
+      );
+
+      // The event at 13:00Z falls inside the EDT-shifted window and must be
+      // returned. Before the TZ fix, the window was 00:00Z → 12:00Z and the
+      // event was excluded — that's the Bunge bug we're regression-testing.
+      assert.equal(
+        events.length,
+        1,
+        `Bunge event at 13:00Z must be included in the EDT-shifted morning window, got events: ${JSON.stringify(events)}`,
+      );
+      assert.equal(events[0].title, 'David Bunge Meeting');
+    } finally {
+      (globalThis as any).fetch = originalFetch;
+      __resetTimezoneCacheForTests();
+    }
   });
 });

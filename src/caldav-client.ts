@@ -1,4 +1,5 @@
 import { DAVClient, DAVCalendar, DAVCalendarObject } from 'tsdav';
+import { resolveDateInput } from './timezone.js';
 
 /**
  * Convert ISO-8601 datetime (with or without timezone offset) to RFC 5545 UTC form.
@@ -321,24 +322,52 @@ export class CalDAVCalendarClient {
     // For single-bound queries we synthesize the missing bound with sane defaults:
     //   - Only startDate: end = start + 90 days (covers ~3 months forward)
     //   - Only endDate:   start = end - 30 days (covers ~1 month backward)
+    //
+    // TZ resolution: every raw input flows through resolveDateInput() so that
+    // naive datetimes (no Z, no offset) are interpreted as wall-clock time in
+    // the user's configured timezone. Without this, the agent's "Thursday
+    // morning" (passed as 2026-05-07T00:00:00 → 2026-05-07T12:00:00) gets
+    // interpreted as a UTC window, missing the user's 09:00 EDT meeting at
+    // 13:00Z. After resolution everything downstream is UTC ISO 8601, so the
+    // existing 90/30-day arithmetic and CalDAV formatting are unaffected.
     if (startDate || endDate) {
       const MS_PER_DAY = 86400000;
       let effectiveStart: string;
       let effectiveEnd: string;
 
-      if (startDate && endDate) {
-        effectiveStart = startDate;
-        effectiveEnd = endDate;
-      } else if (startDate) {
-        effectiveStart = startDate;
-        const startDt = new Date(startDate);
+      // Normalize provided inputs first — surface any parse failures with
+      // the same "Invalid startDate"/"Invalid endDate" prefixes the existing
+      // tests rely on.
+      let normalizedStart: string | undefined;
+      let normalizedEnd: string | undefined;
+      if (startDate) {
+        try {
+          normalizedStart = resolveDateInput(startDate);
+        } catch (err: any) {
+          throw new Error(`Invalid startDate: ${startDate} (${err?.message || err})`);
+        }
+      }
+      if (endDate) {
+        try {
+          normalizedEnd = resolveDateInput(endDate);
+        } catch (err: any) {
+          throw new Error(`Invalid endDate: ${endDate} (${err?.message || err})`);
+        }
+      }
+
+      if (normalizedStart && normalizedEnd) {
+        effectiveStart = normalizedStart;
+        effectiveEnd = normalizedEnd;
+      } else if (normalizedStart) {
+        effectiveStart = normalizedStart;
+        const startDt = new Date(normalizedStart);
         if (isNaN(startDt.getTime())) {
           throw new Error(`Invalid startDate: ${startDate}`);
         }
         effectiveEnd = new Date(startDt.getTime() + 90 * MS_PER_DAY).toISOString();
       } else {
-        effectiveEnd = endDate!;
-        const endDt = new Date(endDate!);
+        effectiveEnd = normalizedEnd!;
+        const endDt = new Date(normalizedEnd!);
         if (isNaN(endDt.getTime())) {
           throw new Error(`Invalid endDate: ${endDate}`);
         }
@@ -563,22 +592,22 @@ export class CalDAVCalendarClient {
       updatedIcs = setVEventProp(updatedIcs, 'LOCATION', escapeICalText(updates.location));
     }
     if (updates.start !== undefined && updates.start !== null && updates.start !== '') {
-      // Preserve existing DTSTART params (e.g. TZID) when replacing the value
-      const existingDtstart = originalData.match(/^(DTSTART[^:]*):.*$/m);
-      const dtstartKey = existingDtstart ? existingDtstart[1] : 'DTSTART';
-      const dtstartVal = updates.start.replace(/[-:]/g, '').replace(/\.\d{3}/, '');
+      // Why: Replace any TZID-parameterized form with a UTC value to remove
+      // ambiguity, and run the input through resolveDateInput so naive datetimes
+      // are interpreted in the user's configured zone (not UTC) before being
+      // formatted as RFC 5545 UTC. The previous string-mangle stripped offsets
+      // entirely, breaking timezone-explicit inputs.
+      const dtstartVal = toCalDateUTC(resolveDateInput(updates.start));
       updatedIcs = updatedIcs.replace(
         /^DTSTART[^\r\n]*(\r?\n[ \t][^\r\n]*)*/m,
-        `${dtstartKey}:${dtstartVal}`
+        `DTSTART:${dtstartVal}`
       );
     }
     if (updates.end !== undefined && updates.end !== null && updates.end !== '') {
-      const existingDtend = originalData.match(/^(DTEND[^:]*):.*$/m);
-      const dtendKey = existingDtend ? existingDtend[1] : 'DTEND';
-      const dtendVal = updates.end.replace(/[-:]/g, '').replace(/\.\d{3}/, '');
+      const dtendVal = toCalDateUTC(resolveDateInput(updates.end));
       updatedIcs = updatedIcs.replace(
         /^DTEND[^\r\n]*(\r?\n[ \t][^\r\n]*)*/m,
-        `${dtendKey}:${dtendVal}`
+        `DTEND:${dtendVal}`
       );
     }
     if (updates.participants !== undefined) {
@@ -651,8 +680,14 @@ export class CalDAVCalendarClient {
 
     const uid = `${Date.now()}-${Math.random().toString(36).slice(2)}@fastmail-mcp`;
     const now = toCalDateUTC(new Date().toISOString());
-    const dtstart = toCalDateUTC(event.start);
-    const dtend = toCalDateUTC(event.end);
+    // Why: A naive event.start like "2026-05-07T09:00:00" should mean 09:00 in
+    // the user's local timezone (configured via FASTMAIL_TIMEZONE / TZ), not
+    // 09:00 UTC. resolveDateInput() honors explicit Z/offsets and otherwise
+    // interprets naive inputs in the configured zone before handing off to
+    // toCalDateUTC for RFC 5545 formatting. This complements 9f3160c by
+    // making the write path TZ-aware in addition to the read path.
+    const dtstart = toCalDateUTC(resolveDateInput(event.start));
+    const dtend = toCalDateUTC(resolveDateInput(event.end));
     const ical = [
       'BEGIN:VCALENDAR',
       'VERSION:2.0',
