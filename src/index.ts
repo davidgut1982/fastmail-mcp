@@ -14,7 +14,7 @@ import { FastmailAuth, FastmailConfig } from './auth.js';
 import { JmapClient } from './jmap-client.js';
 import { ContactsCalendarClient } from './contacts-calendar.js';
 import { CalDAVCalendarClient } from './caldav-client.js';
-import { resolveDateInput, resolveDefaultTimezone } from './timezone.js';
+import { resolveDateInput, resolveDefaultTimezone, isForceLocalTimezone } from './timezone.js';
 
 // Factory: builds a fresh Server instance with all request handlers attached.
 // Used per-session for the StreamableHTTP transport (each transport must be
@@ -137,6 +137,12 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
   // the actual configured timezone the agent's naive datetimes will be
   // interpreted in. Cached after first call, so cheap to invoke.
   const tz = resolveDefaultTimezone();
+  // When force-local mode is on, every TZ-aware tool description gets a
+  // suffix telling the agent that Z/offsets are IGNORED. The user explicitly
+  // chose this — we want the agent to stop pretending it can pass UTC.
+  const forceLocalNote = isForceLocalTimezone()
+    ? ` NOTE: This server is in force-local-timezone mode. All datetime inputs are interpreted as wall-clock time in \`${tz}\`, even if a Z suffix or offset is provided. To pass a true UTC instant, the agent CANNOT — this is intentional, the user prefers local-TZ semantics.`
+    : '';
   return {
     tools: [
       {
@@ -496,7 +502,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       },
       {
         name: 'list_calendar_events',
-        description: `List events from a calendar. Datetime inputs (startDate/endDate) follow this rule: if a UTC suffix (Z) or explicit offset (+HH:MM / -HH:MM) is present, it is honored exactly. If omitted, the value is interpreted as wall-clock time in the user's configured timezone (currently: ${tz}). To query "Thursday morning" pass startDate="2026-05-07T00:00:00" and endDate="2026-05-07T12:00:00" without Z — these will resolve to the correct local-morning window for the user.`,
+        description: `List events from a calendar. Datetime inputs (startDate/endDate) follow this rule: if a UTC suffix (Z) or explicit offset (+HH:MM / -HH:MM) is present, it is honored exactly. If omitted, the value is interpreted as wall-clock time in the user's configured timezone (currently: ${tz}). To query "Thursday morning" pass startDate="2026-05-07T00:00:00" and endDate="2026-05-07T12:00:00" without Z — these will resolve to the correct local-morning window for the user.${forceLocalNote}`,
         inputSchema: {
           type: 'object',
           properties: {
@@ -536,7 +542,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       },
       {
         name: 'create_calendar_event',
-        description: `Create a new calendar event. Datetime inputs (start/end) follow this rule: if a UTC suffix (Z) or explicit offset (+HH:MM / -HH:MM) is present, it is honored exactly. If omitted, the value is interpreted as wall-clock time in the user's configured timezone (currently: ${tz}). To create a 9 AM local meeting, pass start="2026-05-07T09:00:00" without Z.`,
+        description: `Create a new calendar event. Datetime inputs (start/end) follow this rule: if a UTC suffix (Z) or explicit offset (+HH:MM / -HH:MM) is present, it is honored exactly. If omitted, the value is interpreted as wall-clock time in the user's configured timezone (currently: ${tz}). To create a 9 AM local meeting, pass start="2026-05-07T09:00:00" without Z.${forceLocalNote}`,
         inputSchema: {
           type: 'object',
           properties: {
@@ -581,7 +587,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       },
       {
         name: 'update_calendar_event',
-        description: `Update an existing calendar event. Only fields you provide are changed; all other fields are preserved unchanged. Datetime inputs (start/end) follow this rule: if a UTC suffix (Z) or explicit offset (+HH:MM / -HH:MM) is present, it is honored exactly. If omitted, the value is interpreted as wall-clock time in the user's configured timezone (currently: ${tz}).`,
+        description: `Update an existing calendar event. Only fields you provide are changed; all other fields are preserved unchanged. Datetime inputs (start/end) follow this rule: if a UTC suffix (Z) or explicit offset (+HH:MM / -HH:MM) is present, it is honored exactly. If omitted, the value is interpreted as wall-clock time in the user's configured timezone (currently: ${tz}).${forceLocalNote}`,
         inputSchema: {
           type: 'object',
           properties: {
@@ -799,7 +805,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       },
       {
         name: 'advanced_search',
-        description: 'Advanced email search with multiple criteria',
+        description: `Advanced email search with multiple criteria. Datetime inputs (after/before) follow this rule: if a UTC suffix (Z) or explicit offset (+HH:MM / -HH:MM) is present, it is honored exactly. If omitted, the value is interpreted as wall-clock time in the user's configured timezone (currently: ${tz}).${forceLocalNote}`,
         inputSchema: {
           type: 'object',
           properties: {
@@ -1037,6 +1043,15 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
 
 server.setRequestHandler(CallToolRequestSchema, async (request) => {
   const { name, arguments: args } = request.params;
+
+  // Lightweight per-tool-call diagnostic log. Lands in stderr (and journald
+  // when healthy). Lets us see what the agent is actually passing without
+  // having to pry from a Telegram screenshot. Prefixed for easy grepping.
+  try {
+    console.error(`[fastmail-mcp] tool-call ${name} args=${JSON.stringify(args)}`);
+  } catch {
+    console.error(`[fastmail-mcp] tool-call ${name} args=<unserializable>`);
+  }
 
   try {
 

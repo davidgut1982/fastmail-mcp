@@ -80,6 +80,30 @@ export function resolveDefaultTimezone(): string {
 }
 
 /**
+ * Why: The agent keeps passing `Z`-suffixed datetimes despite tool descriptions
+ * saying naive inputs are interpreted in the user's local zone. The user's
+ * actual workflow is "I always mean local wall-clock time" — the agent's UTC
+ * habit is a bug they want the SERVER to ignore. This env var is the kill-switch
+ * that forces every datetime input through the local-zone interpretation,
+ * stripping any `Z` or `[+-]HH:MM` offset the agent attached.
+ *
+ * What: Returns true iff `FASTMAIL_FORCE_LOCAL_TZ` is set to one of `1`,
+ * `true`, `yes`, `on` (case-insensitive). Anything else (including unset)
+ * returns false — preserving the existing offset-honoring behavior for
+ * users who haven't opted in.
+ *
+ * Test: Set FASTMAIL_FORCE_LOCAL_TZ=true, assert isForceLocalTimezone() === true.
+ * Set to "TRUE", "yes", "on", "1" — all true. Set to "0", "false", "no",
+ * "off", "" — all false. Unset entirely — false.
+ */
+export function isForceLocalTimezone(): boolean {
+  const raw = process.env.FASTMAIL_FORCE_LOCAL_TZ;
+  if (typeof raw !== 'string') return false;
+  const normalized = raw.trim().toLowerCase();
+  return normalized === '1' || normalized === 'true' || normalized === 'yes' || normalized === 'on';
+}
+
+/**
  * Why: We need to distinguish "agent passed a UTC instant" from "agent passed
  * a wall-clock time the user meant in their local zone". The presence of a
  * `Z` suffix or `[+-]HH:MM` (or `[+-]HHMM`) offset means the caller has
@@ -128,8 +152,25 @@ export function resolveDateInput(input: string, tz?: string): string {
   if (typeof input !== 'string' || input.trim().length === 0) {
     throw new Error(`Invalid datetime input: ${JSON.stringify(input)}`);
   }
-  const trimmed = input.trim();
+  let trimmed = input.trim();
   const zone = tz || resolveDefaultTimezone();
+
+  // Force-local mode: strip any Z suffix or [+-]HH:?MM offset, then re-localize
+  // in the configured zone. The agent keeps attaching `Z` despite tool
+  // descriptions; this knob lets the user say "I always mean local — ignore
+  // whatever the agent claims about UTC".
+  if (isForceLocalTimezone() && hasExplicitOffset(trimmed)) {
+    const original = trimmed;
+    // Strip trailing Z/z first (cheaper, more common from the agent).
+    let stripped = trimmed.replace(/[zZ]$/, '');
+    // Then strip a trailing [+-]HH(:?MM)? offset (only when attached to the
+    // time portion, mirroring hasExplicitOffset's anchor).
+    stripped = stripped.replace(/([T]\d{2}:\d{2}(?::\d{2})?(?:\.\d+)?)[+-]\d{2}:?\d{0,2}$/, '$1');
+    trimmed = stripped;
+    console.error(
+      `[fastmail-mcp] force-local-tz: stripped offset from "${original}" → "${trimmed}", interpreting in ${zone}`,
+    );
+  }
 
   let dt: DateTime;
   if (hasExplicitOffset(trimmed)) {

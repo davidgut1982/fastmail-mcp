@@ -11,6 +11,7 @@ import {
 } from './caldav-client.js';
 import {
   resolveDateInput,
+  isForceLocalTimezone,
   __resetTimezoneCacheForTests,
 } from './timezone.js';
 
@@ -963,6 +964,202 @@ END:VCALENDAR]]></C:calendar-data>
       );
       assert.equal(events[0].title, 'David Bunge Meeting');
     } finally {
+      (globalThis as any).fetch = originalFetch;
+      __resetTimezoneCacheForTests();
+    }
+  });
+});
+
+/**
+ * Why: After 940aa79 added TZ-aware naive parsing, the agent kept attaching `Z`
+ * to its query window edges anyway — so EDT mornings still got read as UTC and
+ * the Bunge meeting still got dropped. The user's directive was "make the
+ * SERVER force local TZ; ignore whatever Z the agent slaps on". These tests
+ * pin down the FASTMAIL_FORCE_LOCAL_TZ knob and the regression that motivated
+ * it: with force-local on, a Z-suffixed naive 00:00→12:00 window must be
+ * treated as 00:00→12:00 EDT (= 04:00Z→16:00Z) and include the 13:00Z Bunge
+ * event.
+ */
+describe('Force-local timezone mode (FASTMAIL_FORCE_LOCAL_TZ)', () => {
+  // Same env save/restore discipline as the TZ-aware block above. Each test
+  // explicitly sets/unsets FASTMAIL_FORCE_LOCAL_TZ + FASTMAIL_TIMEZONE and
+  // resets the resolver cache so zones are fresh per test.
+  let savedFmTz: string | undefined;
+  let savedTz: string | undefined;
+  let savedForceLocal: string | undefined;
+  before(() => {
+    savedFmTz = process.env.FASTMAIL_TIMEZONE;
+    savedTz = process.env.TZ;
+    savedForceLocal = process.env.FASTMAIL_FORCE_LOCAL_TZ;
+  });
+  after(() => {
+    if (savedFmTz === undefined) delete process.env.FASTMAIL_TIMEZONE;
+    else process.env.FASTMAIL_TIMEZONE = savedFmTz;
+    if (savedTz === undefined) delete process.env.TZ;
+    else process.env.TZ = savedTz;
+    if (savedForceLocal === undefined) delete process.env.FASTMAIL_FORCE_LOCAL_TZ;
+    else process.env.FASTMAIL_FORCE_LOCAL_TZ = savedForceLocal;
+    __resetTimezoneCacheForTests();
+  });
+
+  it('isForceLocalTimezone() recognizes truthy values and rejects everything else', () => {
+    // Truthy values
+    for (const truthy of ['1', 'true', 'TRUE', 'True', 'yes', 'YES', 'on', 'ON']) {
+      process.env.FASTMAIL_FORCE_LOCAL_TZ = truthy;
+      assert.equal(
+        isForceLocalTimezone(),
+        true,
+        `expected ${JSON.stringify(truthy)} to be truthy`,
+      );
+    }
+    // Falsy values
+    for (const falsy of ['0', 'false', 'no', 'off', '', 'maybe', 'foo']) {
+      process.env.FASTMAIL_FORCE_LOCAL_TZ = falsy;
+      assert.equal(
+        isForceLocalTimezone(),
+        false,
+        `expected ${JSON.stringify(falsy)} to be falsy`,
+      );
+    }
+    // Unset
+    delete process.env.FASTMAIL_FORCE_LOCAL_TZ;
+    assert.equal(isForceLocalTimezone(), false, 'unset env var must be falsy');
+  });
+
+  it('(a) with force-local ON: Z-suffixed input is stripped and re-localized in America/New_York', () => {
+    // 2026-05-07 is in EDT (UTC-4). Naive 00:00 in EDT = 04:00Z. With force-local
+    // ON, the agent's `Z` suffix should be discarded and the wall-clock time
+    // re-interpreted in America/New_York → 04:00Z.
+    process.env.FASTMAIL_TIMEZONE = 'America/New_York';
+    process.env.FASTMAIL_FORCE_LOCAL_TZ = 'true';
+    delete process.env.TZ;
+    __resetTimezoneCacheForTests();
+
+    const resolved = resolveDateInput('2026-05-07T00:00:00Z');
+    assert.equal(
+      Date.parse(resolved),
+      Date.parse('2026-05-07T04:00:00Z'),
+      `force-local should strip Z and re-localize: 2026-05-07T00:00:00Z (with EDT default) → 2026-05-07T04:00:00Z, got ${resolved}`,
+    );
+  });
+
+  it('(b) with force-local OFF (default): Z-suffixed input is preserved as the same UTC instant', () => {
+    // Existing behavior — when the user hasn't opted into force-local, an
+    // explicit `Z` is still honored. This is the regression guard against
+    // accidentally enabling the override globally.
+    process.env.FASTMAIL_TIMEZONE = 'America/New_York';
+    delete process.env.FASTMAIL_FORCE_LOCAL_TZ;
+    delete process.env.TZ;
+    __resetTimezoneCacheForTests();
+
+    const resolved = resolveDateInput('2026-05-07T00:00:00Z');
+    assert.equal(
+      Date.parse(resolved),
+      Date.parse('2026-05-07T00:00:00Z'),
+      `force-local OFF should preserve Z: 2026-05-07T00:00:00Z → 2026-05-07T00:00:00Z, got ${resolved}`,
+    );
+  });
+
+  it('(c) with force-local ON: explicit -05:00 offset is stripped and re-localized in America/New_York', () => {
+    // The agent might also try `-05:00` instead of `Z`. Force-local should
+    // strip that too and re-interpret the wall-clock 00:00 as EDT (UTC-4),
+    // producing 04:00Z — NOT the 05:00Z the offset would naively yield.
+    process.env.FASTMAIL_TIMEZONE = 'America/New_York';
+    process.env.FASTMAIL_FORCE_LOCAL_TZ = 'true';
+    delete process.env.TZ;
+    __resetTimezoneCacheForTests();
+
+    const resolved = resolveDateInput('2026-05-07T00:00:00-05:00');
+    assert.equal(
+      Date.parse(resolved),
+      Date.parse('2026-05-07T04:00:00Z'),
+      `force-local should strip -05:00 offset and re-localize as EDT: 2026-05-07T00:00:00-05:00 → 2026-05-07T04:00:00Z, got ${resolved}`,
+    );
+  });
+
+  it('(d) Bunge regression with force-local ON + Z-suffixed input: 13:00Z event IS included', async () => {
+    // The acceptance criterion that motivated this whole knob. The agent
+    // passes Z-suffixed naive datetimes (`2026-05-07T00:00:00Z` /
+    // `2026-05-07T12:00:00Z`) meaning "Thursday morning". With force-local
+    // ON the server strips the Z, treats them as EDT, and queries the server
+    // with 04:00Z → 16:00Z. The 13:00Z Bunge meeting (= 09:00 EDT) falls
+    // inside that window and must be returned.
+    process.env.FASTMAIL_TIMEZONE = 'America/New_York';
+    process.env.FASTMAIL_FORCE_LOCAL_TZ = 'true';
+    delete process.env.TZ;
+    __resetTimezoneCacheForTests();
+
+    const client = new CalDAVCalendarClient({ username: 'test', password: 'test' });
+    const personalCal = { displayName: 'Personal', url: 'https://caldav.example/cal/personal/' };
+    const mockDAVClient = {
+      login: mock.fn(async () => {}),
+      fetchCalendars: mock.fn(async () => [personalCal]),
+      fetchCalendarObjects: mock.fn(async () => []),
+    };
+    (client as any).client = mockDAVClient;
+
+    const fetchCalls: any[] = [];
+    const expandedXml = `<?xml version="1.0" encoding="utf-8"?>
+<D:multistatus xmlns:D="DAV:" xmlns:C="urn:ietf:params:xml:ns:caldav">
+  <D:response>
+    <D:href>/cal/personal/bunge.ics</D:href>
+    <D:propstat>
+      <D:prop>
+        <C:calendar-data><![CDATA[BEGIN:VCALENDAR
+BEGIN:VEVENT
+UID:bunge@fm
+SUMMARY:David Bunge Meeting
+DTSTART:20260507T130000Z
+DTEND:20260507T140000Z
+RECURRENCE-ID:20260507T130000Z
+END:VEVENT
+END:VCALENDAR]]></C:calendar-data>
+      </D:prop>
+    </D:propstat>
+  </D:response>
+</D:multistatus>`;
+    const originalFetch = globalThis.fetch;
+    (globalThis as any).fetch = async (url: string, init: any) => {
+      fetchCalls.push({ url, init });
+      return {
+        ok: true,
+        status: 200,
+        statusText: 'OK',
+        text: async () => expandedXml,
+      };
+    };
+
+    // Suppress the force-local-tz debug log so test output stays clean.
+    const originalErr = console.error;
+    console.error = () => {};
+    try {
+      // Pass the agent's "Thursday morning" with the Z it actually sends.
+      // BEFORE force-local: bounds become 00:00Z→12:00Z, Bunge at 13:00Z is
+      // EXCLUDED. AFTER force-local: bounds become 04:00Z→16:00Z, Bunge is
+      // INCLUDED. That's the regression.
+      const events = await client.getCalendarEvents(
+        undefined,
+        50,
+        '2026-05-07T00:00:00Z',
+        '2026-05-07T12:00:00Z',
+      );
+
+      assert.equal(fetchCalls.length, 1, 'expected exactly one REPORT request');
+      const body = fetchCalls[0].init.body as string;
+      assert.match(
+        body,
+        /<C:expand\s+start="20260507T040000Z"\s+end="20260507T160000Z"\s*\/>/,
+        `force-local should produce EDT-shifted bounds 04:00Z→16:00Z from Z-suffixed naive 00:00→12:00, got body: ${body}`,
+      );
+
+      assert.equal(
+        events.length,
+        1,
+        `Bunge event at 13:00Z must be included in the EDT-shifted morning window when force-local is ON, got events: ${JSON.stringify(events)}`,
+      );
+      assert.equal(events[0].title, 'David Bunge Meeting');
+    } finally {
+      console.error = originalErr;
       (globalThis as any).fetch = originalFetch;
       __resetTimezoneCacheForTests();
     }
