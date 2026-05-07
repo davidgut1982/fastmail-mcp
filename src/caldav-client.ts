@@ -291,6 +291,70 @@ export function escapeICalText(value: string): string {
     .replace(/\r?\n/g, '\\n');
 }
 
+/**
+ * Fetch events from multiple calendars in parallel, merge, sort, and slice.
+ *
+ * Why: sequential per-calendar iteration with an early-exit
+ * `if (allEvents.length >= limit) break` causes calendar starvation — a
+ * volume-heavy calendar iterated first (e.g. a daily-supplement "TRT" calendar)
+ * fills the limit budget, so calendars iterated later (where the user's
+ * Thursday "Bunge" meeting lives) are never queried at all. The fix is to
+ * (a) query every calendar with URL set in parallel via Promise.allSettled,
+ * (b) cap each calendar's contribution to limit*2 (safety bound against a
+ *     runaway calendar OOMing the merge),
+ * (c) merge, sort by start ASC, then slice to the global limit so the
+ *     low-volume calendar's events still get a fair shot at the result set.
+ *
+ * Promise.allSettled (vs Promise.all) means a single bad calendar (network
+ * error, 4xx/5xx) doesn't tank the whole request — failures get logged with
+ * the supplied prefix and the calendar's display name (or URL fallback), and
+ * the caller still receives events from every other calendar that succeeded.
+ *
+ * Both the bounded path (server-side <C:expand> REPORT) and the unbounded
+ * fallback (tsdav fetchCalendarObjects) call into this so the starvation fix
+ * applies uniformly. Commit 9f3160c originally fixed only the bounded path;
+ * the critic's anchoring-check found the unbounded path was still vulnerable.
+ *
+ * @param targetCalendars  Calendars to query. Calendars without a URL are skipped.
+ * @param fetchFn          Per-calendar fetch implementation. Returns events.
+ * @param limit            Global slice ceiling on the merged result.
+ * @param logPrefix        Prefix used in console.error for rejected per-calendar promises.
+ * @returns                Merged, sorted (start ASC), and globally sliced events.
+ */
+export async function parallelFetchAndMerge(
+  targetCalendars: DAVCalendar[],
+  fetchFn: (cal: DAVCalendar) => Promise<CalendarEvent[]>,
+  limit: number,
+  logPrefix: string,
+): Promise<CalendarEvent[]> {
+  const calendarsWithUrl = targetCalendars.filter(cal => !!cal.url);
+  const perCalendarCeiling = Math.max(limit * 2, 1);
+
+  const calendarResults = await Promise.allSettled(
+    calendarsWithUrl.map(async cal => {
+      const events = await fetchFn(cal);
+      return { cal, events: events.slice(0, perCalendarCeiling) };
+    }),
+  );
+
+  const allEvents: CalendarEvent[] = [];
+  const warnings: string[] = [];
+  for (let i = 0; i < calendarResults.length; i++) {
+    const result = calendarResults[i];
+    if (result.status === 'fulfilled') {
+      allEvents.push(...result.value.events);
+    } else {
+      const cal = calendarsWithUrl[i];
+      const label = cal?.displayName ? String(cal.displayName) : (cal?.url || `calendar #${i}`);
+      const reason = result.reason instanceof Error ? result.reason.message : String(result.reason);
+      console.error(`${logPrefix} for calendar "${label}": ${reason}`);
+      warnings.push(label);
+    }
+  }
+  allEvents.sort((a, b) => (a.start || '').localeCompare(b.start || ''));
+  return allEvents.slice(0, limit);
+}
+
 export class CalDAVCalendarClient {
   private config: CalDAVConfig;
   private client: DAVClient | null = null;
@@ -421,53 +485,34 @@ export class CalDAVCalendarClient {
       // Per-calendar fetch ceiling: limit*2 is a safety bound to prevent one
       // runaway calendar from OOMing us, while still leaving headroom for the
       // global merge+slice to surface events from less-prolific calendars.
-      const perCalendarCeiling = Math.max(limit * 2, 1);
-      const calendarResults = await Promise.allSettled(
-        targetCalendars
-          .filter(cal => !!cal.url)
-          .map(async cal => {
-            const expanded = await this.fetchExpandedEvents(cal.url!, effectiveStart, effectiveEnd);
-            return { cal, events: expanded.slice(0, perCalendarCeiling) };
-          }),
+      return parallelFetchAndMerge(
+        targetCalendars,
+        cal => this.fetchExpandedEvents(cal.url!, effectiveStart, effectiveEnd),
+        limit,
+        '[caldav] expand REPORT failed',
       );
-
-      const allEvents: CalendarEvent[] = [];
-      const warnings: string[] = [];
-      for (let i = 0; i < calendarResults.length; i++) {
-        const result = calendarResults[i];
-        if (result.status === 'fulfilled') {
-          allEvents.push(...result.value.events);
-        } else {
-          // Log failed per-calendar query and continue. Identify the calendar
-          // by displayName when available, falling back to URL or index.
-          const cal = targetCalendars.filter(c => !!c.url)[i];
-          const label = cal?.displayName ? String(cal.displayName) : (cal?.url || `calendar #${i}`);
-          const reason = result.reason instanceof Error ? result.reason.message : String(result.reason);
-          console.error(`[caldav] expand REPORT failed for calendar "${label}": ${reason}`);
-          warnings.push(label);
-        }
-      }
-      allEvents.sort((a, b) => (a.start || '').localeCompare(b.start || ''));
-      return allEvents.slice(0, limit);
     }
 
     // Fallback: neither bound provided — unbounded query.
     // Recurring events will only return their master DTSTART.
+    // Why: even on the unbounded path, sequential iteration with the previous
+    // `if (allEvents.length >= limit) break` early-exit caused calendar
+    // starvation — a volume-heavy calendar iterated first (e.g. TRT supplements)
+    // would saturate the limit budget and prevent later calendars from being
+    // queried, so a recurring "Bunge" meeting in a less-prolific calendar would
+    // never surface. Use the same Promise.allSettled + merge + slice pattern as
+    // the bounded path. (Commit 9f3160c only fixed the bounded branch; this
+    // closes the latent unbounded-path starvation the critic flagged.)
     const fetchOptions: any = {};
-
-    const allEvents: CalendarEvent[] = [];
-    for (const cal of targetCalendars) {
-      const objects = await client.fetchCalendarObjects({ calendar: cal, ...fetchOptions });
-      for (const obj of objects) {
-        allEvents.push(parseCalendarObject(obj));
-      }
-      if (allEvents.length >= limit) break;
-    }
-
-    // Sort by start date ascending
-    allEvents.sort((a, b) => (a.start || '').localeCompare(b.start || ''));
-
-    return allEvents.slice(0, limit);
+    return parallelFetchAndMerge(
+      targetCalendars,
+      async cal => {
+        const objects = await client.fetchCalendarObjects({ calendar: cal, ...fetchOptions });
+        return objects.map(obj => parseCalendarObject(obj));
+      },
+      limit,
+      '[caldav] fetchCalendarObjects failed',
+    );
   }
 
   /**

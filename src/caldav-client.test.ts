@@ -7,6 +7,7 @@ import {
   parseCalendarObject,
   parseExpandedMultistatus,
   escapeICalText,
+  parallelFetchAndMerge,
   CalDAVCalendarClient,
 } from './caldav-client.js';
 import {
@@ -901,6 +902,329 @@ END:VCALENDAR]]></C:calendar-data>
 
     const callArgs = mockDAVClient.fetchCalendarObjects.mock.calls[0].arguments[0];
     assert.equal(callArgs.timeRange, undefined);
+  });
+
+  // -----------------------------------------------------------------
+  // Unbounded-path starvation regression
+  //
+  // Why: 9f3160c fixed the bounded path (when startDate or endDate is set)
+  // by replacing the sequential `if (allEvents.length >= limit) break` loop
+  // with Promise.allSettled + merge + slice. The unbounded fallback (no
+  // dates provided) still had the original sequential loop with the same
+  // early-exit, so an agent calling list_calendar_events without dates
+  // ("show me my upcoming events") could still get a high-volume calendar
+  // (e.g. TRT supplements) starve a low-volume calendar (e.g. Bunge).
+  // These tests pin down the unbounded path's no-starvation behavior.
+  // -----------------------------------------------------------------
+  it('unbounded path queries calendars in parallel and merges before slicing (no starvation)', async () => {
+    // Reproduce the bounded-path test (lines 727+) but on the unbounded
+    // fallback. Two calendars: TRT (100 events) and personal (5 Bunge events).
+    // Without the fix, the sequential loop fills the 50-event limit from TRT
+    // and never queries personal, so all 5 Bunge events are lost.
+    const client = new CalDAVCalendarClient({ username: 'test', password: 'test' });
+    const heavyCal: any = {
+      displayName: 'TRT',
+      url: 'https://caldav.example/cal/trt/',
+    };
+    const lightCal: any = {
+      displayName: 'Calendar',
+      url: 'https://caldav.example/cal/personal/',
+    };
+
+    function buildObjects(prefix: string, count: number): Array<{ data: string; url: string }> {
+      const out: Array<{ data: string; url: string }> = [];
+      for (let i = 0; i < count; i++) {
+        const isHeavy = prefix === 'trt';
+        const hour = isHeavy ? '09' : '13';
+        const day = String(10 + (i % 28)).padStart(2, '0');
+        const summary = isHeavy ? `Supplement ${i}` : `Bunge ${i}`;
+        out.push({
+          data: makeIcal(`${prefix}-${i}@fm`, summary, `202605${day}T${hour}0000Z`),
+          url: `/${prefix}/${prefix}-${i}.ics`,
+        });
+      }
+      return out;
+    }
+
+    const calsQueried: string[] = [];
+    const mockDAVClient = {
+      login: mock.fn(async () => {}),
+      fetchCalendars: mock.fn(async () => [heavyCal, lightCal]),
+      fetchCalendarObjects: mock.fn(async ({ calendar }: { calendar: any }) => {
+        calsQueried.push(calendar.url);
+        if (calendar.url === heavyCal.url) return buildObjects('trt', 100);
+        if (calendar.url === lightCal.url) return buildObjects('bunge', 5);
+        return [];
+      }),
+    };
+    (client as any).client = mockDAVClient;
+
+    const limit = 50;
+    // No startDate/endDate → unbounded path.
+    const events = await client.getCalendarEvents(undefined, limit);
+
+    // Assert: BOTH calendars were queried (no early-exit starvation).
+    assert.equal(calsQueried.length, 2, `expected both calendars queried, got ${calsQueried.length}`);
+    assert.ok(calsQueried.includes(heavyCal.url), 'TRT calendar must be queried');
+    assert.ok(
+      calsQueried.includes(lightCal.url),
+      'personal Calendar must be queried (where Bunge meetings live)',
+    );
+
+    // Assert: result is sliced to the global limit (post-merge, post-sort).
+    assert.equal(events.length, limit);
+
+    // Assert: all 105 events are CONSIDERED for the merge — verify by checking
+    // that at least one Bunge event survived the limit slice. With both
+    // calendars contributing on overlapping May days (heavy at 09:00, light
+    // at 13:00) the Bunge entries land within the top-50 ASC slice.
+    const bungeInResult = events.filter(e => e.title.startsWith('Bunge'));
+    assert.ok(
+      bungeInResult.length > 0,
+      `expected at least one Bunge event in top-${limit} unbounded result, got: ${events.map(e => e.title).slice(0, 5).join(', ')}...`,
+    );
+  });
+
+  it('unbounded path continues when one calendar fails and still returns the other calendar events', async () => {
+    // Why: Promise.allSettled means one calendar's failure (network, auth,
+    // 5xx) must not tank the whole unbounded query. Mirror the bounded-path
+    // failure-isolation test on the fallback path.
+    const client = new CalDAVCalendarClient({ username: 'test', password: 'test' });
+    const goodCal: any = { displayName: 'Good', url: 'https://caldav.example/cal/good/' };
+    const badCal: any = { displayName: 'Bad', url: 'https://caldav.example/cal/bad/' };
+
+    const mockDAVClient = {
+      login: mock.fn(async () => {}),
+      fetchCalendars: mock.fn(async () => [goodCal, badCal]),
+      fetchCalendarObjects: mock.fn(async ({ calendar }: { calendar: any }) => {
+        if (calendar.url === badCal.url) {
+          throw new Error('Service Unavailable');
+        }
+        return [
+          {
+            data: makeIcal('good-1@fm', 'Survives bad-calendar failure', '20260507T100000Z'),
+            url: '/cal/good/a.ics',
+          },
+        ];
+      }),
+    };
+    (client as any).client = mockDAVClient;
+
+    // Capture console.error so we can assert on the warning message AND
+    // suppress noise. The handler logs the calendar's displayName.
+    const errorMessages: string[] = [];
+    const originalErr = console.error;
+    console.error = (...args: any[]) => {
+      errorMessages.push(args.map(String).join(' '));
+    };
+
+    try {
+      const events = await client.getCalendarEvents(undefined, 50);
+      assert.equal(events.length, 1);
+      assert.equal(events[0].title, 'Survives bad-calendar failure');
+      // The error log should mention the bad calendar's display name and the
+      // [caldav] prefix (so ops can grep for it).
+      assert.ok(
+        errorMessages.some(m => m.includes('Bad') && m.includes('[caldav]')),
+        `expected console.error to mention bad calendar with [caldav] prefix, got: ${errorMessages.join(' | ')}`,
+      );
+    } finally {
+      console.error = originalErr;
+    }
+  });
+
+  it('unbounded path sorts merged events by start ASC across calendars', async () => {
+    // Why: an event from a low-volume calendar that falls earlier in time
+    // should appear BEFORE later events from a high-volume calendar in the
+    // sliced output, even if its calendar is listed/iterated last. This
+    // proves the merge happens before the sort+slice (i.e. global ordering,
+    // not per-calendar ordering).
+    const client = new CalDAVCalendarClient({ username: 'test', password: 'test' });
+    const heavyCal: any = { displayName: 'TRT', url: 'https://caldav.example/cal/trt/' };
+    const lightCal: any = { displayName: 'Calendar', url: 'https://caldav.example/cal/personal/' };
+
+    const mockDAVClient = {
+      login: mock.fn(async () => {}),
+      // Note: lightCal listed AFTER heavyCal — pre-fix this would be
+      // iterated last and lose its earlier event to the limit budget.
+      fetchCalendars: mock.fn(async () => [heavyCal, lightCal]),
+      fetchCalendarObjects: mock.fn(async ({ calendar }: { calendar: any }) => {
+        if (calendar.url === heavyCal.url) {
+          // Heavy: 10 events on May 15 at 09:00Z (LATER than the light event).
+          return Array.from({ length: 10 }, (_, i) => ({
+            data: makeIcal(`trt-${i}@fm`, `Supplement ${i}`, '20260515T090000Z'),
+            url: `/cal/trt/trt-${i}.ics`,
+          }));
+        }
+        if (calendar.url === lightCal.url) {
+          // Light: 1 event on May 1 at 13:00Z (EARLIER than the heavy events).
+          return [
+            {
+              data: makeIcal('bunge-1@fm', 'Earliest Bunge', '20260501T130000Z'),
+              url: '/cal/personal/bunge-1.ics',
+            },
+          ];
+        }
+        return [];
+      }),
+    };
+    (client as any).client = mockDAVClient;
+
+    const events = await client.getCalendarEvents(undefined, 50);
+
+    // The Bunge event from the second-iterated calendar is chronologically
+    // first (May 1 vs May 15) and MUST appear at index 0 of the merged-sorted
+    // result, proving global sort happens after merge.
+    assert.equal(events.length, 11, 'all 11 events should be present (10 heavy + 1 light)');
+    assert.equal(
+      events[0].title,
+      'Earliest Bunge',
+      `earliest event from light calendar should be first; got: ${events.map(e => e.title).join(', ')}`,
+    );
+  });
+
+  it('bounded path still queries calendars in parallel (regression for 9f3160c bounded fix)', async () => {
+    // Why: factoring out parallelFetchAndMerge from the bounded path must not
+    // change the bounded behavior. Sanity-check that with both bounds set,
+    // both calendars are still queried via Promise.allSettled (no regression).
+    const client = new CalDAVCalendarClient({ username: 'test', password: 'test' });
+    const cal1: any = { displayName: 'A', url: 'https://caldav.example/cal/a/' };
+    const cal2: any = { displayName: 'B', url: 'https://caldav.example/cal/b/' };
+
+    const mockDAVClient = {
+      login: mock.fn(async () => {}),
+      fetchCalendars: mock.fn(async () => [cal1, cal2]),
+      fetchCalendarObjects: mock.fn(async () => []),
+    };
+    (client as any).client = mockDAVClient;
+
+    const fetchedUrls: string[] = [];
+    const originalFetch = globalThis.fetch;
+    (globalThis as any).fetch = async (url: string, _init: any) => {
+      fetchedUrls.push(url);
+      return {
+        ok: true,
+        status: 200,
+        statusText: 'OK',
+        text: async () => '<?xml version="1.0"?><D:multistatus xmlns:D="DAV:"></D:multistatus>',
+      };
+    };
+
+    try {
+      await client.getCalendarEvents(undefined, 50, '2026-05-01T00:00:00Z', '2026-05-31T00:00:00Z');
+      // Both calendars must be queried via the bounded REPORT path, not the
+      // unbounded fetchCalendarObjects path.
+      assert.equal(fetchedUrls.length, 2, 'both calendars queried on bounded path');
+      assert.equal(mockDAVClient.fetchCalendarObjects.mock.callCount(), 0, 'bounded path should not call fetchCalendarObjects');
+    } finally {
+      (globalThis as any).fetch = originalFetch;
+    }
+  });
+});
+
+// -----------------------------------------------------------------
+// parallelFetchAndMerge unit tests (mock the per-calendar fetchFn directly)
+// -----------------------------------------------------------------
+describe('parallelFetchAndMerge', () => {
+  function makeEvent(title: string, startISO: string): any {
+    return { id: title, title, start: startISO, startUtc: startISO };
+  }
+
+  it('queries every calendar with a URL in parallel', async () => {
+    const cals: any[] = [
+      { displayName: 'A', url: 'http://a' },
+      { displayName: 'B', url: 'http://b' },
+      { displayName: 'C', url: 'http://c' },
+    ];
+    const seen: string[] = [];
+    const fetchFn = async (cal: any) => {
+      seen.push(cal.url);
+      return [makeEvent(`evt-${cal.displayName}`, '2026-01-01T00:00:00Z')];
+    };
+
+    const out = await parallelFetchAndMerge(cals, fetchFn, 50, '[test]');
+    assert.equal(out.length, 3);
+    assert.deepEqual(seen.sort(), ['http://a', 'http://b', 'http://c']);
+  });
+
+  it('skips calendars without a URL', async () => {
+    const cals: any[] = [
+      { displayName: 'A', url: 'http://a' },
+      { displayName: 'NoUrl' }, // no url field
+      { displayName: 'B', url: 'http://b' },
+    ];
+    const seen: string[] = [];
+    const fetchFn = async (cal: any) => {
+      seen.push(cal.url);
+      return [makeEvent(`evt-${cal.displayName}`, '2026-01-01T00:00:00Z')];
+    };
+    const out = await parallelFetchAndMerge(cals, fetchFn, 50, '[test]');
+    assert.equal(out.length, 2);
+    assert.equal(seen.length, 2);
+    assert.ok(!seen.includes(undefined as any));
+  });
+
+  it('caps each calendar at limit*2 events before merge', async () => {
+    const cal: any = { displayName: 'Heavy', url: 'http://heavy' };
+    const fetchFn = async () => {
+      return Array.from({ length: 100 }, (_, i) =>
+        makeEvent(`heavy-${i}`, `2026-01-${String(i + 1).padStart(2, '0')}T00:00:00Z`),
+      );
+    };
+    // limit=10, perCalendarCeiling = limit*2 = 20.
+    const out = await parallelFetchAndMerge([cal], fetchFn, 10, '[test]');
+    // Result is sliced to limit (10), but the contributing pool was capped
+    // at 20 (limit*2). With only one calendar this is observable as the
+    // final length being limit, not heavy's full 100.
+    assert.equal(out.length, 10);
+  });
+
+  it('logs and skips calendars whose fetchFn rejects', async () => {
+    const cals: any[] = [
+      { displayName: 'Good', url: 'http://good' },
+      { displayName: 'Bad', url: 'http://bad' },
+    ];
+    const fetchFn = async (cal: any) => {
+      if (cal.displayName === 'Bad') throw new Error('boom');
+      return [makeEvent('good-1', '2026-01-01T00:00:00Z')];
+    };
+
+    const errs: string[] = [];
+    const originalErr = console.error;
+    console.error = (...args: any[]) => errs.push(args.map(String).join(' '));
+    try {
+      const out = await parallelFetchAndMerge(cals, fetchFn, 50, '[test-prefix]');
+      assert.equal(out.length, 1);
+      assert.equal(out[0].title, 'good-1');
+      assert.ok(
+        errs.some(m => m.includes('[test-prefix]') && m.includes('Bad') && m.includes('boom')),
+        `expected error log with prefix and calendar name, got: ${errs.join(' | ')}`,
+      );
+    } finally {
+      console.error = originalErr;
+    }
+  });
+
+  it('sorts merged events by start ASC and applies the global slice', async () => {
+    const cals: any[] = [
+      { displayName: 'A', url: 'http://a' },
+      { displayName: 'B', url: 'http://b' },
+    ];
+    const fetchFn = async (cal: any) => {
+      // cal A returns later events, cal B returns earlier — proves global sort.
+      if (cal.url === 'http://a') {
+        return [
+          makeEvent('A-late', '2026-12-01T00:00:00Z'),
+          makeEvent('A-mid', '2026-06-01T00:00:00Z'),
+        ];
+      }
+      return [makeEvent('B-early', '2026-01-01T00:00:00Z')];
+    };
+    const out = await parallelFetchAndMerge(cals, fetchFn, 50, '[test]');
+    assert.equal(out.length, 3);
+    assert.equal(out[0].title, 'B-early');
+    assert.equal(out[1].title, 'A-mid');
+    assert.equal(out[2].title, 'A-late');
   });
 });
 
