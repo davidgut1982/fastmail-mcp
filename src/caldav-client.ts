@@ -1,5 +1,6 @@
 import { DAVClient, DAVCalendar, DAVCalendarObject } from 'tsdav';
 import { resolveDateInput } from './timezone.js';
+import { localizeEventTimes } from './event-localizer.js';
 
 /**
  * Convert ISO-8601 datetime (with or without timezone offset) to RFC 5545 UTC form.
@@ -43,9 +44,32 @@ export interface CalendarEvent {
   url: string;
   title: string;
   description?: string;
+  /**
+   * Event start. On the read path (after localizeEventTimes), this is an
+   * ISO 8601 string in the user's configured timezone with explicit offset
+   * (e.g. `2026-05-07T09:00:00.000-04:00`), OR a `YYYY-MM-DD` date for
+   * all-day events. The original UTC instant is preserved in `startUtc`.
+   */
   start?: string;
+  /** Event end. Same semantics as `start`; UTC original in `endUtc`. */
   end?: string;
   location?: string;
+  /**
+   * Original UTC instant for `start`, exactly as the CalDAV server returned
+   * it (e.g. `2026-05-07T13:00:00Z`). Use this when round-tripping back to
+   * `update_calendar_event` so rounding/parsing can't shift the moment.
+   * Absent for all-day events (date-only `start`).
+   */
+  startUtc?: string;
+  /** Original UTC instant for `end`. Same semantics as `startUtc`. */
+  endUtc?: string;
+  /**
+   * IANA zone (e.g. `America/New_York`) the `start`/`end` strings are
+   * expressed in. Explicit signal to consumers that times are LOCAL, not
+   * UTC — so reasoning about morning/afternoon/evening uses the user's
+   * wall clock, not UTC.
+   */
+  timezone?: string;
 }
 
 /**
@@ -125,7 +149,7 @@ export function parseCalendarObject(obj: DAVCalendarObject): CalendarEvent {
   const location = parseICalValue(vevent, 'LOCATION');
   const uid = parseICalValue(vevent, 'UID') || obj.url || '';
 
-  return {
+  const base: CalendarEvent = {
     id: uid,
     url: obj.url || '',
     title: unescapeICalText(title),
@@ -134,6 +158,12 @@ export function parseCalendarObject(obj: DAVCalendarObject): CalendarEvent {
     end: formatICalDate(rawEnd),
     location: location ? unescapeICalText(location) : undefined,
   };
+  // Why: Localize at the point of construction so EVERY caller of
+  // parseCalendarObject (getCalendarEventById, the unbounded fallback in
+  // getCalendarEvents, the post-update return in updateCalendarEvent) gets
+  // the same TZ-aware shape. The agent's morning/afternoon heuristic only
+  // works correctly when the JSON it sees is in the user's local zone.
+  return localizeEventTimes(base);
 }
 
 /**
@@ -217,15 +247,20 @@ export function parseExpandedMultistatus(
       // so callers (or downstream get_calendar_event) can distinguish them.
       const id = recurrenceId ? `${uid}_${recurrenceId}` : uid;
 
-      events.push({
-        id,
-        url: objectUrl,
-        title: unescapeICalText(title),
-        description: description ? unescapeICalText(description) : undefined,
-        start: formatICalDate(rawStart),
-        end: formatICalDate(rawEnd),
-        location: location ? unescapeICalText(location) : undefined,
-      });
+      // Why: Localize each occurrence so the agent sees Bunge's 13:00Z
+      // start as `09:00:00-04:00` (EDT) and correctly classifies it as
+      // morning. The original UTC instant is preserved in startUtc/endUtc.
+      events.push(
+        localizeEventTimes({
+          id,
+          url: objectUrl,
+          title: unescapeICalText(title),
+          description: description ? unescapeICalText(description) : undefined,
+          start: formatICalDate(rawStart),
+          end: formatICalDate(rawEnd),
+          location: location ? unescapeICalText(location) : undefined,
+        }),
+      );
     }
   }
 

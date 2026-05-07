@@ -502,7 +502,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       },
       {
         name: 'list_calendar_events',
-        description: `List events from a calendar. Datetime inputs (startDate/endDate) follow this rule: if a UTC suffix (Z) or explicit offset (+HH:MM / -HH:MM) is present, it is honored exactly. If omitted, the value is interpreted as wall-clock time in the user's configured timezone (currently: ${tz}). To query "Thursday morning" pass startDate="2026-05-07T00:00:00" and endDate="2026-05-07T12:00:00" without Z — these will resolve to the correct local-morning window for the user.${forceLocalNote}`,
+        description: `List events from a calendar. Datetime inputs (startDate/endDate) follow this rule: if a UTC suffix (Z) or explicit offset (+HH:MM / -HH:MM) is present, it is honored exactly. If omitted, the value is interpreted as wall-clock time in the user's configured timezone (currently: ${tz}). To query "Thursday morning" pass startDate="2026-05-07T00:00:00" and endDate="2026-05-07T12:00:00" without Z — these will resolve to the correct local-morning window for the user. Returned event \`start\` / \`end\` are formatted in the user's configured timezone (${tz}) with explicit offset (e.g. \`2026-05-07T09:00:00.000-04:00\`). Use these when reasoning about "morning" / "afternoon" / "evening" — those terms refer to the LOCAL time, not UTC. The original UTC instants are preserved in \`startUtc\` / \`endUtc\` for round-trips back to update_calendar_event. Each event also carries a \`timezone\` field naming the IANA zone. All-day events keep their date-only \`start\` / \`end\` and have no startUtc/endUtc.${forceLocalNote}`,
         inputSchema: {
           type: 'object',
           properties: {
@@ -528,7 +528,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       },
       {
         name: 'get_calendar_event',
-        description: 'Get a specific calendar event by ID',
+        description: `Get a specific calendar event by ID. The returned event \`start\` / \`end\` are formatted in the user's configured timezone (${tz}) with explicit offset (e.g. \`2026-05-07T09:00:00.000-04:00\`). Use these when reasoning about "morning" / "afternoon" / "evening" — those terms refer to the LOCAL time, not UTC. The original UTC instants are preserved in \`startUtc\` / \`endUtc\` for round-trips. All-day events keep their date-only \`start\` / \`end\` and have no startUtc/endUtc.${forceLocalNote}`,
         inputSchema: {
           type: 'object',
           properties: {
@@ -542,7 +542,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       },
       {
         name: 'create_calendar_event',
-        description: `Create a new calendar event. Datetime inputs (start/end) follow this rule: if a UTC suffix (Z) or explicit offset (+HH:MM / -HH:MM) is present, it is honored exactly. If omitted, the value is interpreted as wall-clock time in the user's configured timezone (currently: ${tz}). To create a 9 AM local meeting, pass start="2026-05-07T09:00:00" without Z.${forceLocalNote}`,
+        description: `Create a new calendar event. Datetime inputs (start/end) follow this rule: if a UTC suffix (Z) or explicit offset (+HH:MM / -HH:MM) is present, it is honored exactly. If omitted, the value is interpreted as wall-clock time in the user's configured timezone (currently: ${tz}). To create a 9 AM local meeting, pass start="2026-05-07T09:00:00" without Z. The CalDAV-fallback response returns the created event's UID; use get_calendar_event to fetch its full localized form (\`start\` / \`end\` in ${tz} with explicit offset, \`startUtc\` / \`endUtc\` preserving the UTC instant, plus a \`timezone\` field).${forceLocalNote}`,
         inputSchema: {
           type: 'object',
           properties: {
@@ -587,7 +587,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       },
       {
         name: 'update_calendar_event',
-        description: `Update an existing calendar event. Only fields you provide are changed; all other fields are preserved unchanged. Datetime inputs (start/end) follow this rule: if a UTC suffix (Z) or explicit offset (+HH:MM / -HH:MM) is present, it is honored exactly. If omitted, the value is interpreted as wall-clock time in the user's configured timezone (currently: ${tz}).${forceLocalNote}`,
+        description: `Update an existing calendar event. Only fields you provide are changed; all other fields are preserved unchanged. Datetime inputs (start/end) follow this rule: if a UTC suffix (Z) or explicit offset (+HH:MM / -HH:MM) is present, it is honored exactly. If omitted, the value is interpreted as wall-clock time in the user's configured timezone (currently: ${tz}). The returned event has \`start\` / \`end\` formatted in ${tz} with explicit offset (e.g. \`2026-05-07T09:00:00.000-04:00\`); the original UTC instants are preserved in \`startUtc\` / \`endUtc\`, plus a \`timezone\` field. Use these when reasoning about "morning" / "afternoon" / "evening" — those terms refer to the LOCAL time, not UTC.${forceLocalNote}`,
         inputSchema: {
           type: 'object',
           properties: {

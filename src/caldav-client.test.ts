@@ -14,6 +14,7 @@ import {
   isForceLocalTimezone,
   __resetTimezoneCacheForTests,
 } from './timezone.js';
+import { localizeEventTimes } from './event-localizer.js';
 
 describe('extractVEvent', () => {
   it('extracts VEVENT block from iCalendar data', () => {
@@ -123,6 +124,27 @@ describe('formatICalDate', () => {
 });
 
 describe('parseCalendarObject', () => {
+  // parseCalendarObject now localizes start/end to the configured timezone
+  // (per the localizeEventTimes refactor — see event-localizer.ts). Pin the
+  // tests to America/New_York so assertions are deterministic regardless of
+  // host system timezone. Save/restore env to avoid bleeding state.
+  let savedFmTz: string | undefined;
+  let savedTz: string | undefined;
+  before(() => {
+    savedFmTz = process.env.FASTMAIL_TIMEZONE;
+    savedTz = process.env.TZ;
+    process.env.FASTMAIL_TIMEZONE = 'America/New_York';
+    delete process.env.TZ;
+    __resetTimezoneCacheForTests();
+  });
+  after(() => {
+    if (savedFmTz === undefined) delete process.env.FASTMAIL_TIMEZONE;
+    else process.env.FASTMAIL_TIMEZONE = savedFmTz;
+    if (savedTz === undefined) delete process.env.TZ;
+    else process.env.TZ = savedTz;
+    __resetTimezoneCacheForTests();
+  });
+
   it('parses a full calendar object with VTIMEZONE + VEVENT', () => {
     const data = [
       'BEGIN:VCALENDAR',
@@ -160,9 +182,22 @@ describe('parseCalendarObject', () => {
     assert.equal(event.title, 'Morning Meeting');
     assert.equal(event.description, 'Discuss project\nSecond line');
     assert.equal(event.location, 'Room A, Building 1');
-    // Should get the VEVENT DTSTART, not the VTIMEZONE one
-    assert.equal(event.start, '2026-03-20T08:30:00');
-    assert.equal(event.end, '2026-03-20T09:30:00');
+    // Localizer treats this floating-time value as UTC (DTSTART has no
+    // explicit Z but no offset; we don't expand VTIMEZONE), then shifts to
+    // America/New_York. 08:30 UTC on 2026-03-20 = 04:30 EDT (DST in effect).
+    // The original UTC value is preserved in startUtc/endUtc.
+    assert.equal(
+      Date.parse(event.start as string),
+      Date.parse('2026-03-20T08:30:00Z'),
+      `start should represent the same UTC instant, got ${event.start}`,
+    );
+    assert.equal(event.timezone, 'America/New_York');
+    assert.match(event.start as string, /-04:00$/);
+    assert.equal(
+      Date.parse(event.end as string),
+      Date.parse('2026-03-20T09:30:00Z'),
+      `end should represent the same UTC instant, got ${event.end}`,
+    );
   });
 
   it('parses an all-day event', () => {
@@ -196,8 +231,17 @@ describe('parseCalendarObject', () => {
     ].join('\r\n');
 
     const event = parseCalendarObject({ data, url: '' });
-    assert.equal(event.start, '2026-03-20T08:30:00Z');
-    assert.equal(event.end, '2026-03-20T09:30:00Z');
+    // After localization: 08:30Z → 04:30 EDT (March is in DST = UTC-4).
+    // Original UTC is preserved in startUtc/endUtc.
+    assert.equal(
+      Date.parse(event.start as string),
+      Date.parse('2026-03-20T08:30:00Z'),
+      `start should still represent 08:30Z, got ${event.start}`,
+    );
+    assert.match(event.start as string, /-04:00$/);
+    assert.equal(event.startUtc, '2026-03-20T08:30:00Z');
+    assert.equal(event.endUtc, '2026-03-20T09:30:00Z');
+    assert.equal(event.timezone, 'America/New_York');
   });
 
   it('defaults title to Untitled when SUMMARY is missing', () => {
@@ -276,6 +320,26 @@ describe('escapeICalText', () => {
 });
 
 describe('CalDAVCalendarClient.getCalendarEvents', () => {
+  // Localizer (event-localizer.ts) rewrites event.start/end into the
+  // configured zone with explicit offset. Pin to America/New_York so
+  // assertions are deterministic regardless of host TZ.
+  let savedFmTz: string | undefined;
+  let savedTz: string | undefined;
+  before(() => {
+    savedFmTz = process.env.FASTMAIL_TIMEZONE;
+    savedTz = process.env.TZ;
+    process.env.FASTMAIL_TIMEZONE = 'America/New_York';
+    delete process.env.TZ;
+    __resetTimezoneCacheForTests();
+  });
+  after(() => {
+    if (savedFmTz === undefined) delete process.env.FASTMAIL_TIMEZONE;
+    else process.env.FASTMAIL_TIMEZONE = savedFmTz;
+    if (savedTz === undefined) delete process.env.TZ;
+    else process.env.TZ = savedTz;
+    __resetTimezoneCacheForTests();
+  });
+
   function makeIcal(uid: string, summary: string, dtstart: string): string {
     return [
       'BEGIN:VCALENDAR',
@@ -379,10 +443,19 @@ END:VCALENDAR]]></C:calendar-data>
       assert.match(fetchCalls[0].init.body, /<C:expand\s+start="20260325T000000Z"\s+end="20260326T000000Z"\s*\/>/);
       assert.match(fetchCalls[0].init.body, /<C:time-range/);
 
-      // Returned event has expanded DTSTART
+      // Returned event has expanded DTSTART, localized to America/New_York.
+      // 10:00Z on 2026-03-25 = 06:00 EDT (DST in effect). Original UTC is
+      // preserved in startUtc; timezone field signals locality.
       assert.equal(events.length, 1);
       assert.equal(events[0].title, 'Event');
-      assert.equal(events[0].start, '2026-03-25T10:00:00Z');
+      assert.equal(
+        Date.parse(events[0].start as string),
+        Date.parse('2026-03-25T10:00:00Z'),
+        `start should represent 10:00Z, got ${events[0].start}`,
+      );
+      assert.match(events[0].start as string, /-04:00$/);
+      assert.equal(events[0].startUtc, '2026-03-25T10:00:00Z');
+      assert.equal(events[0].timezone, 'America/New_York');
     } finally {
       (globalThis as any).fetch = originalFetch;
     }
@@ -632,10 +705,23 @@ END:VCALENDAR]]></C:calendar-data>
     const titles = events.map(e => e.title).sort();
     assert.deepEqual(titles, ['David Bunge Meeting', 'Trash day']);
     const trash = events.find(e => e.title === 'Trash day')!;
+    // All-day events pass through with date string unchanged (no timed
+    // localization), and the localizer attaches `timezone` for shape
+    // consistency but never sets startUtc/endUtc on date-only values.
     assert.equal(trash.start, '2026-05-08');
+    assert.equal(trash.startUtc, undefined);
     assert.ok(trash.id.includes('_'), 'recurrence-id should be appended to id');
     const bunge = events.find(e => e.title === 'David Bunge Meeting')!;
-    assert.equal(bunge.start, '2026-05-07T13:00:00Z');
+    // Bunge: 13:00Z localized to America/New_York = 09:00 EDT (UTC-4 in May).
+    // Same instant, just a different presentation; UTC original preserved.
+    assert.equal(
+      Date.parse(bunge.start as string),
+      Date.parse('2026-05-07T13:00:00Z'),
+      `bunge.start should represent 13:00Z, got ${bunge.start}`,
+    );
+    assert.match(bunge.start as string, /-04:00$/);
+    assert.equal(bunge.startUtc, '2026-05-07T13:00:00Z');
+    assert.equal(bunge.timezone, 'America/New_York');
   });
 
   it('queries calendars in parallel and merges before slicing (no starvation)', async () => {
@@ -1163,5 +1249,239 @@ END:VCALENDAR]]></C:calendar-data>
       (globalThis as any).fetch = originalFetch;
       __resetTimezoneCacheForTests();
     }
+  });
+});
+
+/**
+ * Why: The Bunge regression had a second face — even after the input-side TZ
+ * fixes (940aa79, 404dbf7) made the QUERY window correct, the agent kept
+ * dropping the event client-side because the OUTPUT was still in UTC. The
+ * agent saw `2026-05-07T13:00:00Z` and reasoned "1pm UTC = afternoon",
+ * filtering out a 09:00 EDT meeting that IS in the user's morning. Surfacing
+ * the local-zone representation with explicit offset removes that misread.
+ * These tests pin down the output-localization contract: what shape the
+ * agent sees in JSON for timed events, all-day events, and the full
+ * end-to-end Bunge flow.
+ */
+describe('Event output localization', () => {
+  // Same env discipline as the input-resolution tests above. Each test sets
+  // FASTMAIL_TIMEZONE explicitly and resets the resolver cache so zones are
+  // fresh per test, then restores prior env.
+  let savedFmTz: string | undefined;
+  let savedTz: string | undefined;
+  before(() => {
+    savedFmTz = process.env.FASTMAIL_TIMEZONE;
+    savedTz = process.env.TZ;
+  });
+  after(() => {
+    if (savedFmTz === undefined) delete process.env.FASTMAIL_TIMEZONE;
+    else process.env.FASTMAIL_TIMEZONE = savedFmTz;
+    if (savedTz === undefined) delete process.env.TZ;
+    else process.env.TZ = savedTz;
+    __resetTimezoneCacheForTests();
+  });
+
+  it('(a) NY zone: 13:00Z event localized to 09:00-04:00 with UTC preserved', () => {
+    // Acceptance: with defaultTimezone=America/New_York, an event whose
+    // CalDAV dtstart is 2026-05-07T13:00:00Z is returned with
+    // start="2026-05-07T09:00:00-04:00" (or millisecond-precise equivalent),
+    // startUtc="2026-05-07T13:00:00Z", timezone="America/New_York".
+    process.env.FASTMAIL_TIMEZONE = 'America/New_York';
+    delete process.env.TZ;
+    __resetTimezoneCacheForTests();
+
+    const localized = localizeEventTimes({
+      start: '2026-05-07T13:00:00Z',
+      end: '2026-05-07T14:00:00Z',
+    });
+
+    // The localized start represents the same UTC instant — same moment,
+    // different presentation. Date.parse equivalence is the cleanest way to
+    // assert that without coupling to luxon's millisecond formatting.
+    assert.equal(
+      Date.parse(localized.start as string),
+      Date.parse('2026-05-07T13:00:00Z'),
+      `localized start should be the same instant as 13:00Z, got ${localized.start}`,
+    );
+    // Explicit -04:00 offset is the human-visible signal that times are EDT.
+    // EDT is UTC-4, in effect on 2026-05-07 (DST runs from 2nd Sun in March).
+    assert.match(localized.start as string, /-04:00$/, `start must end with -04:00 offset, got ${localized.start}`);
+    // End must also be localized.
+    assert.equal(
+      Date.parse(localized.end as string),
+      Date.parse('2026-05-07T14:00:00Z'),
+      `localized end should be the same instant as 14:00Z, got ${localized.end}`,
+    );
+    assert.match(localized.end as string, /-04:00$/);
+    // Original UTC instants preserved verbatim — required for round-tripping
+    // back to update_calendar_event without rounding shifts.
+    assert.equal(localized.startUtc, '2026-05-07T13:00:00Z');
+    assert.equal(localized.endUtc, '2026-05-07T14:00:00Z');
+    assert.equal(localized.timezone, 'America/New_York');
+  });
+
+  it('(b) all-day event: date string preserved unchanged, no time component added', () => {
+    // Why: Fastmail signals all-day events with a date-only DTSTART
+    // (DTSTART;VALUE=DATE:20260507). After formatICalDate that becomes the
+    // string "2026-05-07" — no T, no time. The localizer must NOT mangle
+    // that into a midnight datetime; an all-day birthday is not a 00:00
+    // timed event. Date-only stays date-only; only `timezone` is added so
+    // the agent has consistent shape signals.
+    process.env.FASTMAIL_TIMEZONE = 'America/New_York';
+    delete process.env.TZ;
+    __resetTimezoneCacheForTests();
+
+    const localized = localizeEventTimes({
+      start: '2026-05-07',
+      end: '2026-05-08',
+    });
+
+    assert.equal(localized.start, '2026-05-07', 'all-day start must pass through unchanged');
+    assert.equal(localized.end, '2026-05-08', 'all-day end must pass through unchanged');
+    // No UTC original for date-only values — emitting a fake `00:00:00Z`
+    // would mislead consumers about the event's semantics (all-day vs timed).
+    assert.equal(localized.startUtc, undefined, 'all-day start must not have a startUtc field');
+    assert.equal(localized.endUtc, undefined, 'all-day end must not have an endUtc field');
+    // Timezone field is still set so the agent gets a consistent shape.
+    assert.equal(localized.timezone, 'America/New_York');
+  });
+
+  it('(c) Bunge end-to-end: getCalendarEvents on broad mock returns Bunge with 09:00-04:00, not 13:00Z', async () => {
+    // The whole-system regression: a naive 00:00 → 12:00 query against a
+    // mocked CalDAV serving Bunge at 13:00Z (timed) AND a "Trash day"
+    // all-day supplement. After the localizer, the JSON the MCP layer hands
+    // to the agent must show Bunge with start="...09:00:00...-04:00" and the
+    // all-day event still as "2026-05-08". This is the shape that prevents
+    // the agent's afternoon/morning misread.
+    process.env.FASTMAIL_TIMEZONE = 'America/New_York';
+    delete process.env.TZ;
+    __resetTimezoneCacheForTests();
+
+    const client = new CalDAVCalendarClient({ username: 'test', password: 'test' });
+    const personalCal = { displayName: 'Personal', url: 'https://caldav.example/cal/personal/' };
+    const supplementCal = { displayName: 'Supplements', url: 'https://caldav.example/cal/supp/' };
+    const mockDAVClient = {
+      login: mock.fn(async () => {}),
+      fetchCalendars: mock.fn(async () => [personalCal, supplementCal]),
+      fetchCalendarObjects: mock.fn(async () => []),
+    };
+    (client as any).client = mockDAVClient;
+
+    const personalXml = `<?xml version="1.0" encoding="utf-8"?>
+<D:multistatus xmlns:D="DAV:" xmlns:C="urn:ietf:params:xml:ns:caldav">
+  <D:response>
+    <D:href>/cal/personal/bunge.ics</D:href>
+    <D:propstat>
+      <D:prop>
+        <C:calendar-data><![CDATA[BEGIN:VCALENDAR
+BEGIN:VEVENT
+UID:bunge@fm
+SUMMARY:David Bunge Meeting
+DTSTART:20260507T130000Z
+DTEND:20260507T140000Z
+RECURRENCE-ID:20260507T130000Z
+END:VEVENT
+END:VCALENDAR]]></C:calendar-data>
+      </D:prop>
+    </D:propstat>
+  </D:response>
+</D:multistatus>`;
+    const supplementXml = `<?xml version="1.0" encoding="utf-8"?>
+<D:multistatus xmlns:D="DAV:" xmlns:C="urn:ietf:params:xml:ns:caldav">
+  <D:response>
+    <D:href>/cal/supp/trash.ics</D:href>
+    <D:propstat>
+      <D:prop>
+        <C:calendar-data><![CDATA[BEGIN:VCALENDAR
+BEGIN:VEVENT
+UID:trash@fm
+SUMMARY:Trash day
+DTSTART;VALUE=DATE:20260507
+DTEND;VALUE=DATE:20260508
+RECURRENCE-ID;VALUE=DATE:20260507
+END:VEVENT
+END:VCALENDAR]]></C:calendar-data>
+      </D:prop>
+    </D:propstat>
+  </D:response>
+</D:multistatus>`;
+
+    const originalFetch = globalThis.fetch;
+    (globalThis as any).fetch = async (url: string) => {
+      const xml = url.includes('/personal/') ? personalXml : supplementXml;
+      return {
+        ok: true,
+        status: 200,
+        statusText: 'OK',
+        text: async () => xml,
+      };
+    };
+
+    try {
+      // Agent's "Thursday morning" — naive, no Z, no offset. With NY default
+      // TZ, this becomes a 04:00Z → 16:00Z window; both calendars are queried
+      // in parallel and merged.
+      const events = await client.getCalendarEvents(
+        undefined,
+        50,
+        '2026-05-07T00:00:00',
+        '2026-05-07T12:00:00',
+      );
+
+      const bunge = events.find(e => e.title === 'David Bunge Meeting');
+      const trash = events.find(e => e.title === 'Trash day');
+
+      // Bunge present and localized (NOT shown as 13:00Z, which is the bug).
+      assert.ok(bunge, `Bunge must be in result; events=${JSON.stringify(events)}`);
+      assert.match(
+        bunge!.start as string,
+        /09:00:00.*-04:00$/,
+        `Bunge start must show 09:00:00 with -04:00 offset (NY morning), got ${bunge!.start}`,
+      );
+      assert.equal(bunge!.startUtc, '2026-05-07T13:00:00Z', 'Bunge startUtc must preserve the original UTC instant');
+      assert.equal(bunge!.timezone, 'America/New_York');
+
+      // All-day event still passes through unchanged — the localizer must
+      // NOT corrupt date-only values into datetimes.
+      assert.ok(trash, 'all-day Trash event must also be in result');
+      assert.equal(trash!.start, '2026-05-07', 'all-day start must remain date-only');
+      assert.equal(trash!.end, '2026-05-08', 'all-day end must remain date-only');
+      assert.equal(trash!.startUtc, undefined);
+    } finally {
+      (globalThis as any).fetch = originalFetch;
+      __resetTimezoneCacheForTests();
+    }
+  });
+
+  it('(d) UTC zone: 13:00Z passes through with no offset shift (localizer is configurable)', () => {
+    // Sanity check that the localizer is not hardcoded to EDT. With
+    // defaultTimezone=UTC, the same 13:00Z input must come out as a UTC
+    // instant — formatted with `Z` suffix, no offset shift. This is the
+    // baseline that proves the zone parameter actually drives behavior.
+    process.env.FASTMAIL_TIMEZONE = 'UTC';
+    delete process.env.TZ;
+    __resetTimezoneCacheForTests();
+
+    const localized = localizeEventTimes({
+      start: '2026-05-07T13:00:00Z',
+      end: '2026-05-07T14:00:00Z',
+    });
+
+    // Same instant, presented in UTC.
+    assert.equal(
+      Date.parse(localized.start as string),
+      Date.parse('2026-05-07T13:00:00Z'),
+      `start should still represent 13:00Z, got ${localized.start}`,
+    );
+    // luxon emits Z (not +00:00) for the UTC zone; allow either since both
+    // are valid ISO 8601 representations of UTC.
+    assert.match(
+      localized.start as string,
+      /(Z|\+00:00)$/,
+      `UTC zone output must end with Z or +00:00, got ${localized.start}`,
+    );
+    assert.equal(localized.startUtc, '2026-05-07T13:00:00Z');
+    assert.equal(localized.endUtc, '2026-05-07T14:00:00Z');
+    assert.equal(localized.timezone, 'UTC');
   });
 });
