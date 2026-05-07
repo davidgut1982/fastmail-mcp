@@ -15,6 +15,22 @@ import { JmapClient } from './jmap-client.js';
 import { ContactsCalendarClient } from './contacts-calendar.js';
 import { CalDAVCalendarClient } from './caldav-client.js';
 import { resolveDateInput, resolveDefaultTimezone, isForceLocalTimezone } from './timezone.js';
+import { normalizeToolArgs } from './param-normalizer.js';
+
+// Lazy-built map: tool name → its declared inputSchema. Populated the first
+// time anyone (ListTools or CallTool) needs it. We resolve via the same
+// builder ListTools uses so the map is guaranteed to match what the client
+// sees. Schemas are stable across calls (descriptions reference tz, but the
+// property KEYS we normalize against don't), so once-and-cached is fine.
+let toolSchemaCache: Map<string, any> | null = null;
+function getToolSchemaMap(): Map<string, any> {
+  if (toolSchemaCache) return toolSchemaCache;
+  const tools = buildToolsList();
+  const map = new Map<string, any>();
+  for (const t of tools) map.set(t.name, t.inputSchema);
+  toolSchemaCache = map;
+  return map;
+}
 
 // Factory: builds a fresh Server instance with all request handlers attached.
 // Used per-session for the StreamableHTTP transport (each transport must be
@@ -131,8 +147,11 @@ function getDownloadDir(): string | undefined {
   ]).value;
 }
 
-function registerHandlers(server: Server): void {
-server.setRequestHandler(ListToolsRequestSchema, async () => {
+// Builds the full tool list. Pulled out of the ListTools handler so the
+// CallTool dispatcher can reuse the inputSchemas for snake_case → camelCase
+// param normalization without duplicating the literals. Descriptions still
+// interpolate the live timezone & force-local note on each invocation.
+function buildToolsList() {
   // Resolve once per ListTools response so the tool descriptions advertise
   // the actual configured timezone the agent's naive datetimes will be
   // interpreted in. Cached after first call, so cheap to invoke.
@@ -143,8 +162,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
   const forceLocalNote = isForceLocalTimezone()
     ? ` NOTE: This server is in force-local-timezone mode. All datetime inputs are interpreted as wall-clock time in \`${tz}\`, even if a Z suffix or offset is provided. To pass a true UTC instant, the agent CANNOT — this is intentional, the user prefers local-TZ semantics.`
     : '';
-  return {
-    tools: [
+  return [
       {
         name: 'list_mailboxes',
         description: 'List all mailboxes in the Fastmail account',
@@ -1037,20 +1055,54 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
           },
         },
       },
-    ],
-  };
+    ];
+}
+
+function registerHandlers(server: Server): void {
+server.setRequestHandler(ListToolsRequestSchema, async () => {
+  return { tools: buildToolsList() };
 });
 
 server.setRequestHandler(CallToolRequestSchema, async (request) => {
-  const { name, arguments: args } = request.params;
+  const { name, arguments: rawArgs } = request.params;
 
   // Lightweight per-tool-call diagnostic log. Lands in stderr (and journald
   // when healthy). Lets us see what the agent is actually passing without
   // having to pry from a Telegram screenshot. Prefixed for easy grepping.
+  // We log the ORIGINAL args here (before normalization) so it's obvious what
+  // the model emitted. If normalization rewrites anything, a second line is
+  // emitted right after with the post-normalization payload.
   try {
-    console.error(`[fastmail-mcp] tool-call ${name} args=${JSON.stringify(args)}`);
+    console.error(`[fastmail-mcp] tool-call ${name} args=${JSON.stringify(rawArgs)}`);
   } catch {
     console.error(`[fastmail-mcp] tool-call ${name} args=<unserializable>`);
+  }
+
+  // Normalize incoming params. Cheap non-Anthropic models (Llama / Mistral
+  // via DeepInfra → LiteLLM) routinely emit snake_case (calendar_id,
+  // start_date) where our schema declares camelCase (calendarId, startDate).
+  // Without this step the SDK validator rejects the call before our handler
+  // ever sees the args, and the agent retries identically until it gives up
+  // and fabricates a success message. We rewrite known snake_case keys into
+  // their camelCase equivalents based on each tool's declared inputSchema;
+  // unknown keys pass through untouched so a real typo still reaches the
+  // handler (and either falls through harmlessly or raises a clearer error).
+  const schemaMap = getToolSchemaMap();
+  const inputSchema = schemaMap.get(name);
+  const normalized = normalizeToolArgs(
+    rawArgs as Record<string, any> | undefined,
+    inputSchema,
+    name
+  );
+  const args = normalized.args;
+  if (normalized.changed) {
+    try {
+      console.error(
+        `[fastmail-mcp] tool-call ${name} normalized-args=${JSON.stringify(args)}`
+      );
+    } catch {
+      console.error(`[fastmail-mcp] tool-call ${name} normalized-args=<unserializable>`);
+    }
   }
 
   try {
