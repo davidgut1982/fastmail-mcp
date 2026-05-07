@@ -5,6 +5,7 @@ import {
   parseICalValue,
   formatICalDate,
   parseCalendarObject,
+  parseExpandedMultistatus,
   escapeICalText,
   CalDAVCalendarClient,
 } from './caldav-client.js';
@@ -311,18 +312,493 @@ describe('CalDAVCalendarClient.getCalendarEvents', () => {
     assert.equal(events[2].title, 'Evening');
   });
 
-  it('passes timeRange to fetchCalendarObjects when startDate/endDate provided', async () => {
+  it('uses CalDAV REPORT with <C:expand> when both startDate and endDate provided', async () => {
+    // When both dates are provided, the client should use server-side recurrence
+    // expansion via raw REPORT (not fetchCalendarObjects), so recurring events
+    // appear with their actual occurrence DTSTART, not the master DTSTART.
     const objects = [
       { data: makeIcal('a@fm', 'Event', '20260325T100000Z'), url: '/a.ics' },
     ];
     const { client, mockDAVClient } = createMockedClient(objects);
-    await client.getCalendarEvents(undefined, 50, '2026-03-25T00:00:00Z', '2026-03-26T00:00:00Z');
 
-    const callArgs = mockDAVClient.fetchCalendarObjects.mock.calls[0].arguments[0];
-    assert.deepEqual(callArgs.timeRange, {
-      start: '2026-03-25T00:00:00Z',
-      end: '2026-03-26T00:00:00Z',
-    });
+    // Stub global fetch to capture the REPORT request and return a multistatus
+    // body with one expanded VEVENT.
+    const originalFetch = globalThis.fetch;
+    const fetchCalls: any[] = [];
+    const expandedXml = `<?xml version="1.0" encoding="utf-8"?>
+<D:multistatus xmlns:D="DAV:" xmlns:C="urn:ietf:params:xml:ns:caldav">
+  <D:response>
+    <D:href>/cal/personal/a.ics</D:href>
+    <D:propstat>
+      <D:prop>
+        <D:getetag>"abc"</D:getetag>
+        <C:calendar-data><![CDATA[BEGIN:VCALENDAR
+BEGIN:VEVENT
+UID:a@fm
+DTSTART:20260325T100000Z
+DTEND:20260325T110000Z
+SUMMARY:Event
+RECURRENCE-ID:20260325T100000Z
+END:VEVENT
+END:VCALENDAR]]></C:calendar-data>
+      </D:prop>
+      <D:status>HTTP/1.1 200 OK</D:status>
+    </D:propstat>
+  </D:response>
+</D:multistatus>`;
+    (globalThis as any).fetch = async (url: string, init: any) => {
+      fetchCalls.push({ url, init });
+      return {
+        ok: true,
+        status: 200,
+        statusText: 'OK',
+        text: async () => expandedXml,
+      };
+    };
+    try {
+      const events = await client.getCalendarEvents(
+        undefined,
+        50,
+        '2026-03-25T00:00:00Z',
+        '2026-03-26T00:00:00Z',
+      );
+
+      // fetchCalendarObjects must NOT be called on the time-windowed path
+      assert.equal(mockDAVClient.fetchCalendarObjects.mock.calls.length, 0);
+
+      // Exactly one REPORT request issued
+      assert.equal(fetchCalls.length, 1);
+      assert.equal(fetchCalls[0].init.method, 'REPORT');
+      assert.equal(fetchCalls[0].init.headers.Depth, '1');
+      // Body contains <C:expand> with the correct CalDAV-formatted dates
+      assert.match(fetchCalls[0].init.body, /<C:expand\s+start="20260325T000000Z"\s+end="20260326T000000Z"\s*\/>/);
+      assert.match(fetchCalls[0].init.body, /<C:time-range/);
+
+      // Returned event has expanded DTSTART
+      assert.equal(events.length, 1);
+      assert.equal(events[0].title, 'Event');
+      assert.equal(events[0].start, '2026-03-25T10:00:00Z');
+    } finally {
+      (globalThis as any).fetch = originalFetch;
+    }
+  });
+
+  it('uses <C:expand> when only startDate is provided (synthesizes end = start + 90 days)', async () => {
+    const objects = [
+      { data: makeIcal('a@fm', 'Event', '20260507T100000Z'), url: '/a.ics' },
+    ];
+    const { client, mockDAVClient } = createMockedClient(objects);
+
+    const originalFetch = globalThis.fetch;
+    const fetchCalls: any[] = [];
+    const expandedXml = `<?xml version="1.0" encoding="utf-8"?>
+<D:multistatus xmlns:D="DAV:" xmlns:C="urn:ietf:params:xml:ns:caldav">
+  <D:response>
+    <D:href>/cal/personal/a.ics</D:href>
+    <D:propstat>
+      <D:prop>
+        <D:getetag>"abc"</D:getetag>
+        <C:calendar-data><![CDATA[BEGIN:VCALENDAR
+BEGIN:VEVENT
+UID:a@fm
+DTSTART:20260507T100000Z
+DTEND:20260507T110000Z
+SUMMARY:Event
+RECURRENCE-ID:20260507T100000Z
+END:VEVENT
+END:VCALENDAR]]></C:calendar-data>
+      </D:prop>
+      <D:status>HTTP/1.1 200 OK</D:status>
+    </D:propstat>
+  </D:response>
+</D:multistatus>`;
+    (globalThis as any).fetch = async (url: string, init: any) => {
+      fetchCalls.push({ url, init });
+      return {
+        ok: true,
+        status: 200,
+        statusText: 'OK',
+        text: async () => expandedXml,
+      };
+    };
+    try {
+      const events = await client.getCalendarEvents(
+        undefined,
+        50,
+        '2026-03-25T00:00:00Z',
+        // No endDate
+      );
+
+      // fetchCalendarObjects must NOT be called — should hit expand path
+      assert.equal(mockDAVClient.fetchCalendarObjects.mock.calls.length, 0);
+
+      // Exactly one REPORT request issued
+      assert.equal(fetchCalls.length, 1);
+      assert.equal(fetchCalls[0].init.method, 'REPORT');
+
+      const body = fetchCalls[0].init.body as string;
+      // start should match input date
+      assert.match(body, /<C:expand\s+start="20260325T000000Z"/);
+      // end should be approximately 90 days later (2026-06-23T00:00:00Z)
+      const endMatch = body.match(/end="(\d{8}T\d{6}Z)"/);
+      assert.ok(endMatch, 'end attribute should be present in expand');
+      const endStr = endMatch![1];
+      // Parse 20260623T000000Z → epoch ms and check ~90 days from start
+      const startMs = Date.parse('2026-03-25T00:00:00Z');
+      const endMs = Date.parse(
+        `${endStr.slice(0, 4)}-${endStr.slice(4, 6)}-${endStr.slice(6, 8)}T${endStr.slice(9, 11)}:${endStr.slice(11, 13)}:${endStr.slice(13, 15)}Z`,
+      );
+      const daysDiff = (endMs - startMs) / 86400000;
+      assert.ok(
+        Math.abs(daysDiff - 90) < 0.01,
+        `expected ~90 day window, got ${daysDiff} days`,
+      );
+
+      assert.equal(events.length, 1);
+      assert.equal(events[0].title, 'Event');
+    } finally {
+      (globalThis as any).fetch = originalFetch;
+    }
+  });
+
+  it('uses <C:expand> when only endDate is provided (synthesizes start = end - 30 days)', async () => {
+    const objects = [
+      { data: makeIcal('a@fm', 'Event', '20260507T100000Z'), url: '/a.ics' },
+    ];
+    const { client, mockDAVClient } = createMockedClient(objects);
+
+    const originalFetch = globalThis.fetch;
+    const fetchCalls: any[] = [];
+    const expandedXml = `<?xml version="1.0" encoding="utf-8"?>
+<D:multistatus xmlns:D="DAV:" xmlns:C="urn:ietf:params:xml:ns:caldav">
+  <D:response>
+    <D:href>/cal/personal/a.ics</D:href>
+    <D:propstat>
+      <D:prop>
+        <D:getetag>"abc"</D:getetag>
+        <C:calendar-data><![CDATA[BEGIN:VCALENDAR
+BEGIN:VEVENT
+UID:a@fm
+DTSTART:20260507T100000Z
+DTEND:20260507T110000Z
+SUMMARY:Event
+RECURRENCE-ID:20260507T100000Z
+END:VEVENT
+END:VCALENDAR]]></C:calendar-data>
+      </D:prop>
+      <D:status>HTTP/1.1 200 OK</D:status>
+    </D:propstat>
+  </D:response>
+</D:multistatus>`;
+    (globalThis as any).fetch = async (url: string, init: any) => {
+      fetchCalls.push({ url, init });
+      return {
+        ok: true,
+        status: 200,
+        statusText: 'OK',
+        text: async () => expandedXml,
+      };
+    };
+    try {
+      const events = await client.getCalendarEvents(
+        undefined,
+        50,
+        undefined,
+        '2026-03-25T00:00:00Z',
+      );
+
+      // fetchCalendarObjects must NOT be called — should hit expand path
+      assert.equal(mockDAVClient.fetchCalendarObjects.mock.calls.length, 0);
+
+      // Exactly one REPORT request issued
+      assert.equal(fetchCalls.length, 1);
+      assert.equal(fetchCalls[0].init.method, 'REPORT');
+
+      const body = fetchCalls[0].init.body as string;
+      // end should match input date
+      assert.match(body, /end="20260325T000000Z"/);
+      // start should be approximately 30 days earlier (2026-02-23T00:00:00Z)
+      const startMatch = body.match(/<C:expand\s+start="(\d{8}T\d{6}Z)"/);
+      assert.ok(startMatch, 'start attribute should be present in expand');
+      const startStr = startMatch![1];
+      const endMs = Date.parse('2026-03-25T00:00:00Z');
+      const startMs = Date.parse(
+        `${startStr.slice(0, 4)}-${startStr.slice(4, 6)}-${startStr.slice(6, 8)}T${startStr.slice(9, 11)}:${startStr.slice(11, 13)}:${startStr.slice(13, 15)}Z`,
+      );
+      const daysDiff = (endMs - startMs) / 86400000;
+      assert.ok(
+        Math.abs(daysDiff - 30) < 0.01,
+        `expected ~30 day window, got ${daysDiff} days`,
+      );
+
+      assert.equal(events.length, 1);
+      assert.equal(events[0].title, 'Event');
+    } finally {
+      (globalThis as any).fetch = originalFetch;
+    }
+  });
+
+  it('falls through to fetchCalendarObjects (legacy path) when neither bound is provided', async () => {
+    const objects = [
+      { data: makeIcal('a@fm', 'Event', '20260325T100000Z'), url: '/a.ics' },
+    ];
+    const { client, mockDAVClient } = createMockedClient(objects);
+
+    // Track that fetch (REPORT) is NOT called
+    const originalFetch = globalThis.fetch;
+    let fetchCalled = false;
+    (globalThis as any).fetch = async () => {
+      fetchCalled = true;
+      throw new Error('fetch should not be called when no bounds provided');
+    };
+    try {
+      const events = await client.getCalendarEvents(undefined, 50);
+
+      // fetchCalendarObjects MUST be called (legacy path)
+      assert.equal(mockDAVClient.fetchCalendarObjects.mock.calls.length, 1);
+      // Raw fetch (REPORT/expand) MUST NOT be called
+      assert.equal(fetchCalled, false);
+      // No timeRange should be passed
+      const callArgs = mockDAVClient.fetchCalendarObjects.mock.calls[0].arguments[0];
+      assert.equal(callArgs.timeRange, undefined);
+
+      assert.equal(events.length, 1);
+      assert.equal(events[0].title, 'Event');
+    } finally {
+      (globalThis as any).fetch = originalFetch;
+    }
+  });
+
+  it('throws when only an invalid startDate is provided', async () => {
+    const { client } = createMockedClient([]);
+    await assert.rejects(
+      async () => client.getCalendarEvents(undefined, 50, 'not-a-date'),
+      /Invalid startDate/,
+    );
+  });
+
+  it('throws when only an invalid endDate is provided', async () => {
+    const { client } = createMockedClient([]);
+    await assert.rejects(
+      async () => client.getCalendarEvents(undefined, 50, undefined, 'not-a-date'),
+      /Invalid endDate/,
+    );
+  });
+
+  it('parseExpandedMultistatus extracts every VEVENT occurrence from a REPORT response', () => {
+    const xml = `<?xml version="1.0" encoding="utf-8"?>
+<D:multistatus xmlns:D="DAV:" xmlns:C="urn:ietf:params:xml:ns:caldav">
+  <D:response>
+    <D:href>/cal/personal/trash.ics</D:href>
+    <D:propstat>
+      <D:prop>
+        <C:calendar-data><![CDATA[BEGIN:VCALENDAR
+BEGIN:VEVENT
+UID:trash@fm
+SUMMARY:Trash day
+DTSTART;VALUE=DATE:20260508
+DTEND;VALUE=DATE:20260509
+RECURRENCE-ID;VALUE=DATE:20260508
+END:VEVENT
+END:VCALENDAR]]></C:calendar-data>
+      </D:prop>
+    </D:propstat>
+  </D:response>
+  <D:response>
+    <D:href>/cal/personal/bunge.ics</D:href>
+    <D:propstat>
+      <D:prop>
+        <C:calendar-data><![CDATA[BEGIN:VCALENDAR
+BEGIN:VEVENT
+UID:bunge@fm
+SUMMARY:David Bunge Meeting
+DTSTART:20260507T130000Z
+DTEND:20260507T140000Z
+RECURRENCE-ID:20260507T130000Z
+END:VEVENT
+END:VCALENDAR]]></C:calendar-data>
+      </D:prop>
+    </D:propstat>
+  </D:response>
+</D:multistatus>`;
+
+    const events = parseExpandedMultistatus(xml, 'https://caldav.example/cal/personal/');
+    assert.equal(events.length, 2);
+    const titles = events.map(e => e.title).sort();
+    assert.deepEqual(titles, ['David Bunge Meeting', 'Trash day']);
+    const trash = events.find(e => e.title === 'Trash day')!;
+    assert.equal(trash.start, '2026-05-08');
+    assert.ok(trash.id.includes('_'), 'recurrence-id should be appended to id');
+    const bunge = events.find(e => e.title === 'David Bunge Meeting')!;
+    assert.equal(bunge.start, '2026-05-07T13:00:00Z');
+  });
+
+  it('queries calendars in parallel and merges before slicing (no starvation)', async () => {
+    // Why: sequential iteration with `if (allEvents.length >= limit) break`
+    // starves later calendars — a volume-heavy calendar fills the budget and
+    // a later calendar's events (e.g. Thursday "Bunge" meeting) never get
+    // queried. This test asserts that:
+    //   1. ALL calendars are queried (no early break),
+    //   2. Events from a later calendar are NOT lost when an earlier calendar
+    //      returns more than `limit` events,
+    //   3. The final merged+sorted result respects the global limit.
+    const client = new CalDAVCalendarClient({ username: 'test', password: 'test' });
+    const heavyCal = { displayName: 'TRT', url: 'https://caldav.example/cal/trt/' };
+    const lightCal = { displayName: 'Calendar', url: 'https://caldav.example/cal/personal/' };
+    const mockDAVClient = {
+      login: mock.fn(async () => {}),
+      fetchCalendars: mock.fn(async () => [heavyCal, lightCal]),
+      fetchCalendarObjects: mock.fn(async () => []),
+    };
+    (client as any).client = mockDAVClient;
+
+    // Build a multistatus body with N VEVENTs for the given calendar URL
+    function buildMultistatus(calendarUrl: string, count: number, prefix: string): string {
+      const responses: string[] = [];
+      for (let i = 0; i < count; i++) {
+        // Stagger times so sort is deterministic. Heavy events at hour 09,
+        // light events at hour 13 (Thursday meeting time).
+        const isHeavy = prefix === 'trt';
+        const hour = isHeavy ? '09' : '13';
+        const day = String(10 + (i % 28)).padStart(2, '0');
+        responses.push(
+          `<D:response><D:href>${calendarUrl}${prefix}-${i}.ics</D:href><D:propstat><D:prop>` +
+            `<C:calendar-data><![CDATA[BEGIN:VCALENDAR\nBEGIN:VEVENT\nUID:${prefix}-${i}@fm\n` +
+            `DTSTART:202605${day}T${hour}0000Z\nDTEND:202605${day}T${hour}3000Z\n` +
+            `SUMMARY:${prefix === 'trt' ? 'Supplement' : 'Bunge'} ${i}\n` +
+            `RECURRENCE-ID:202605${day}T${hour}0000Z\nEND:VEVENT\nEND:VCALENDAR]]></C:calendar-data>` +
+            `</D:prop></D:propstat></D:response>`,
+        );
+      }
+      return `<?xml version="1.0" encoding="utf-8"?><D:multistatus xmlns:D="DAV:" xmlns:C="urn:ietf:params:xml:ns:caldav">${responses.join('')}</D:multistatus>`;
+    }
+
+    const originalFetch = globalThis.fetch;
+    const fetchedUrls: string[] = [];
+    (globalThis as any).fetch = async (url: string, _init: any) => {
+      fetchedUrls.push(url);
+      let body: string;
+      if (url.includes('/cal/trt/')) {
+        body = buildMultistatus(url, 100, 'trt');
+      } else if (url.includes('/cal/personal/')) {
+        body = buildMultistatus(url, 5, 'bunge');
+      } else {
+        body = '<?xml version="1.0"?><D:multistatus xmlns:D="DAV:"></D:multistatus>';
+      }
+      return {
+        ok: true,
+        status: 200,
+        statusText: 'OK',
+        text: async () => body,
+      };
+    };
+
+    try {
+      const limit = 50;
+      const events = await client.getCalendarEvents(
+        undefined,
+        limit,
+        '2026-05-01T00:00:00Z',
+        '2026-05-31T00:00:00Z',
+      );
+
+      // Assert ALL calendars were queried (proves no starvation / early-exit).
+      assert.equal(fetchedUrls.length, 2, 'both calendars must be queried');
+      assert.ok(
+        fetchedUrls.some(u => u.includes('/cal/trt/')),
+        'TRT calendar must be queried',
+      );
+      assert.ok(
+        fetchedUrls.some(u => u.includes('/cal/personal/')),
+        'personal Calendar must be queried (where Bunge meeting lives)',
+      );
+
+      // Assert the result is sliced to limit (post-merge, post-sort).
+      assert.equal(events.length, limit);
+
+      // Assert all 5 Bunge events from the lighter calendar made it into the
+      // candidate pool — they must not be lost because the heavy calendar
+      // returned 100 events. Since events are sorted by start ASC, the first
+      // events should be the May 10 ones; both calendars have entries on
+      // May 10 (heavy at 09:00, light at 13:00), so the Bunge entries
+      // *can* land within the top-50 slice. Verify that at least one Bunge
+      // event is present in the limit-sliced result.
+      const bungeInResult = events.filter(e => e.title.startsWith('Bunge'));
+      assert.ok(
+        bungeInResult.length > 0,
+        `expected at least one Bunge event in top-${limit} result, got: ${events.map(e => e.title).slice(0, 5).join(', ')}...`,
+      );
+    } finally {
+      (globalThis as any).fetch = originalFetch;
+    }
+  });
+
+  it('continues when one calendar fails and surfaces the other calendar events', async () => {
+    // Why: a transient network error or 4xx/5xx on one calendar must not
+    // tank the whole broad-query response. Promise.allSettled means failed
+    // calendars are logged and skipped while successful ones still return.
+    const client = new CalDAVCalendarClient({ username: 'test', password: 'test' });
+    const goodCal = { displayName: 'Good', url: 'https://caldav.example/cal/good/' };
+    const badCal = { displayName: 'Bad', url: 'https://caldav.example/cal/bad/' };
+    const mockDAVClient = {
+      login: mock.fn(async () => {}),
+      fetchCalendars: mock.fn(async () => [goodCal, badCal]),
+      fetchCalendarObjects: mock.fn(async () => []),
+    };
+    (client as any).client = mockDAVClient;
+
+    const goodXml = `<?xml version="1.0" encoding="utf-8"?>
+<D:multistatus xmlns:D="DAV:" xmlns:C="urn:ietf:params:xml:ns:caldav">
+  <D:response>
+    <D:href>/cal/good/a.ics</D:href>
+    <D:propstat><D:prop>
+      <C:calendar-data><![CDATA[BEGIN:VCALENDAR
+BEGIN:VEVENT
+UID:good@fm
+DTSTART:20260507T100000Z
+DTEND:20260507T110000Z
+SUMMARY:Survives bad-calendar failure
+RECURRENCE-ID:20260507T100000Z
+END:VEVENT
+END:VCALENDAR]]></C:calendar-data>
+    </D:prop></D:propstat>
+  </D:response>
+</D:multistatus>`;
+
+    const originalFetch = globalThis.fetch;
+    (globalThis as any).fetch = async (url: string, _init: any) => {
+      if (url.includes('/cal/bad/')) {
+        return {
+          ok: false,
+          status: 503,
+          statusText: 'Service Unavailable',
+          text: async () => 'upstream down',
+        };
+      }
+      return {
+        ok: true,
+        status: 200,
+        statusText: 'OK',
+        text: async () => goodXml,
+      };
+    };
+
+    // Suppress expected error log so test output stays clean.
+    const originalErr = console.error;
+    console.error = () => {};
+    try {
+      const events = await client.getCalendarEvents(
+        undefined,
+        50,
+        '2026-05-01T00:00:00Z',
+        '2026-05-31T00:00:00Z',
+      );
+      assert.equal(events.length, 1);
+      assert.equal(events[0].title, 'Survives bad-calendar failure');
+    } finally {
+      console.error = originalErr;
+      (globalThis as any).fetch = originalFetch;
+    }
   });
 
   it('does not pass timeRange when no dates provided', async () => {

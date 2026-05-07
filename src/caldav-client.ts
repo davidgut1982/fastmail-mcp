@@ -1,5 +1,28 @@
 import { DAVClient, DAVCalendar, DAVCalendarObject } from 'tsdav';
 
+/**
+ * Convert ISO-8601 datetime (with or without timezone offset) to RFC 5545 UTC form.
+ * Output format: YYYYMMDDTHHMMSSZ
+ *
+ * The previous implementation `event.start.replace(/[-:]/g, '')` destroyed timezone
+ * offsets by stripping `:` from `+05:00`, producing invalid CalDAV strings that the
+ * server silently rejected (or accepted as garbage). This helper goes through Date
+ * to normalize to UTC, then formats per RFC 5545.
+ */
+export function toCalDateUTC(iso: string): string {
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) {
+    throw new Error(`Invalid datetime: ${iso}`);
+  }
+  const y = d.getUTCFullYear().toString().padStart(4, '0');
+  const m = (d.getUTCMonth() + 1).toString().padStart(2, '0');
+  const day = d.getUTCDate().toString().padStart(2, '0');
+  const hh = d.getUTCHours().toString().padStart(2, '0');
+  const mm = d.getUTCMinutes().toString().padStart(2, '0');
+  const ss = d.getUTCSeconds().toString().padStart(2, '0');
+  return `${y}${m}${day}T${hh}${mm}${ss}Z`;
+}
+
 export interface CalDAVConfig {
   username: string;
   password: string;
@@ -113,6 +136,102 @@ export function parseCalendarObject(obj: DAVCalendarObject): CalendarEvent {
 }
 
 /**
+ * Decode the small set of XML entities that may appear inside a
+ * <C:calendar-data> CDATA block. Most servers wrap calendar-data in CDATA
+ * (so no decoding needed), but some encode `<`, `>`, `&` inline.
+ */
+export function decodeXMLEntities(s: string): string {
+  return s
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&apos;/g, "'")
+    .replace(/&amp;/g, '&');
+}
+
+/**
+ * Parse a CalDAV multistatus REPORT response that contains expanded VEVENTs.
+ *
+ * Why: After issuing a calendar-query with `<C:expand>`, the server returns one
+ * <D:response> per source calendar object, each containing a <C:calendar-data>
+ * CDATA block with one VEVENT per expanded occurrence. We need to extract every
+ * VEVENT — not just the first — because a single recurring event yields N
+ * occurrences in the window.
+ *
+ * Note: some events span multiple <D:response> blocks (one per original ics
+ * file), and within each block the VCALENDAR may contain multiple VEVENTs (one
+ * per occurrence within that recurrence series).
+ */
+export function parseExpandedMultistatus(
+  xml: string,
+  calendarUrl: string,
+): CalendarEvent[] {
+  const events: CalendarEvent[] = [];
+
+  // Match every <D:response>...</D:response> block. We then extract the href and
+  // the calendar-data within, then split out each VEVENT inside the iCal data.
+  // Be permissive with namespace prefixes (D:, C:, default ns).
+  const responseBlockRe = /<(?:[A-Za-z0-9]+:)?response\b[^>]*>([\s\S]*?)<\/(?:[A-Za-z0-9]+:)?response>/gi;
+  const hrefRe = /<(?:[A-Za-z0-9]+:)?href\b[^>]*>([\s\S]*?)<\/(?:[A-Za-z0-9]+:)?href>/i;
+  // calendar-data may use CDATA or be entity-encoded
+  const calDataRe = /<(?:[A-Za-z0-9]+:)?calendar-data\b[^>]*>(?:<!\[CDATA\[([\s\S]*?)\]\]>|([\s\S]*?))<\/(?:[A-Za-z0-9]+:)?calendar-data>/i;
+
+  let blockMatch: RegExpExecArray | null;
+  while ((blockMatch = responseBlockRe.exec(xml)) !== null) {
+    const block = blockMatch[1];
+    const hrefMatch = block.match(hrefRe);
+    const href = hrefMatch ? hrefMatch[1].trim() : '';
+    // Construct an absolute URL for the source ics file. The href is normally
+    // a server-relative path (e.g. /dav/calendars/.../event.ics). Resolve it
+    // against the calendar URL when that's absolute; otherwise return as-is.
+    let objectUrl = '';
+    if (href) {
+      try {
+        objectUrl = new URL(href, calendarUrl).toString();
+      } catch {
+        objectUrl = href;
+      }
+    }
+
+    const dataMatch = block.match(calDataRe);
+    if (!dataMatch) continue;
+    const ical = (dataMatch[1] ?? dataMatch[2] ?? '').replace(/^\s+|\s+$/g, '');
+    if (!ical) continue;
+    const decoded = decodeXMLEntities(ical);
+
+    // Each VCALENDAR may contain multiple VEVENTs (one per expanded occurrence).
+    const veventRe = /BEGIN:VEVENT[\s\S]*?END:VEVENT/g;
+    let vMatch: RegExpExecArray | null;
+    while ((vMatch = veventRe.exec(decoded)) !== null) {
+      const vevent = vMatch[0];
+      const title = parseICalValue(vevent, 'SUMMARY') || 'Untitled';
+      const description = parseICalValue(vevent, 'DESCRIPTION');
+      const rawStart = parseICalValue(vevent, 'DTSTART');
+      const rawEnd = parseICalValue(vevent, 'DTEND');
+      const location = parseICalValue(vevent, 'LOCATION');
+      const uid = parseICalValue(vevent, 'UID') || objectUrl || '';
+      const recurrenceId = parseICalValue(vevent, 'RECURRENCE-ID');
+
+      // Disambiguate occurrences of the same UID by appending the RECURRENCE-ID
+      // so callers (or downstream get_calendar_event) can distinguish them.
+      const id = recurrenceId ? `${uid}_${recurrenceId}` : uid;
+
+      events.push({
+        id,
+        url: objectUrl,
+        title: unescapeICalText(title),
+        description: description ? unescapeICalText(description) : undefined,
+        start: formatICalDate(rawStart),
+        end: formatICalDate(rawEnd),
+        location: location ? unescapeICalText(location) : undefined,
+      });
+    }
+  }
+
+  return events;
+}
+
+/**
  * Unescape an iCalendar text value (RFC 5545 §3.3.11).
  * Reverses escaping of newlines, semicolons, commas, and backslashes.
  */
@@ -194,13 +313,83 @@ export class CalDAVCalendarClient {
       );
     }
 
-    const fetchOptions: any = {};
+    // When ANY time bound is provided, use server-side recurrence expansion
+    // via CalDAV REPORT with <C:expand> (RFC 4791 §9.6.5). Without this, the
+    // server returns the recurrence master VEVENT with its original DTSTART,
+    // making recurring events invisible to time-windowed queries.
+    //
+    // For single-bound queries we synthesize the missing bound with sane defaults:
+    //   - Only startDate: end = start + 90 days (covers ~3 months forward)
+    //   - Only endDate:   start = end - 30 days (covers ~1 month backward)
     if (startDate || endDate) {
-      fetchOptions.timeRange = {
-        start: startDate || '1970-01-01T00:00:00Z',
-        end: endDate || '2099-12-31T23:59:59Z',
-      };
+      const MS_PER_DAY = 86400000;
+      let effectiveStart: string;
+      let effectiveEnd: string;
+
+      if (startDate && endDate) {
+        effectiveStart = startDate;
+        effectiveEnd = endDate;
+      } else if (startDate) {
+        effectiveStart = startDate;
+        const startDt = new Date(startDate);
+        if (isNaN(startDt.getTime())) {
+          throw new Error(`Invalid startDate: ${startDate}`);
+        }
+        effectiveEnd = new Date(startDt.getTime() + 90 * MS_PER_DAY).toISOString();
+      } else {
+        effectiveEnd = endDate!;
+        const endDt = new Date(endDate!);
+        if (isNaN(endDt.getTime())) {
+          throw new Error(`Invalid endDate: ${endDate}`);
+        }
+        effectiveStart = new Date(endDt.getTime() - 30 * MS_PER_DAY).toISOString();
+      }
+
+      // Query all calendars in parallel. Why: sequential iteration with an
+      // early-exit `if (allEvents.length >= limit) break` causes calendar
+      // starvation — a volume-heavy calendar (e.g. one daily-supplement
+      // "TRT" calendar emitting ~66 events/window) can fill the limit budget
+      // on the first iteration, so calendars iterated later (where the user's
+      // recurring "Bunge" Thursday meeting actually lives) are never queried.
+      // Use Promise.allSettled so a single bad calendar (network error, 4xx/5xx)
+      // doesn't fail the whole request — log and continue, surfacing failed
+      // calendar names in a warnings array on the calendar-bound path.
+      // Per-calendar fetch ceiling: limit*2 is a safety bound to prevent one
+      // runaway calendar from OOMing us, while still leaving headroom for the
+      // global merge+slice to surface events from less-prolific calendars.
+      const perCalendarCeiling = Math.max(limit * 2, 1);
+      const calendarResults = await Promise.allSettled(
+        targetCalendars
+          .filter(cal => !!cal.url)
+          .map(async cal => {
+            const expanded = await this.fetchExpandedEvents(cal.url!, effectiveStart, effectiveEnd);
+            return { cal, events: expanded.slice(0, perCalendarCeiling) };
+          }),
+      );
+
+      const allEvents: CalendarEvent[] = [];
+      const warnings: string[] = [];
+      for (let i = 0; i < calendarResults.length; i++) {
+        const result = calendarResults[i];
+        if (result.status === 'fulfilled') {
+          allEvents.push(...result.value.events);
+        } else {
+          // Log failed per-calendar query and continue. Identify the calendar
+          // by displayName when available, falling back to URL or index.
+          const cal = targetCalendars.filter(c => !!c.url)[i];
+          const label = cal?.displayName ? String(cal.displayName) : (cal?.url || `calendar #${i}`);
+          const reason = result.reason instanceof Error ? result.reason.message : String(result.reason);
+          console.error(`[caldav] expand REPORT failed for calendar "${label}": ${reason}`);
+          warnings.push(label);
+        }
+      }
+      allEvents.sort((a, b) => (a.start || '').localeCompare(b.start || ''));
+      return allEvents.slice(0, limit);
     }
+
+    // Fallback: neither bound provided — unbounded query.
+    // Recurring events will only return their master DTSTART.
+    const fetchOptions: any = {};
 
     const allEvents: CalendarEvent[] = [];
     for (const cal of targetCalendars) {
@@ -215,6 +404,74 @@ export class CalDAVCalendarClient {
     allEvents.sort((a, b) => (a.start || '').localeCompare(b.start || ''));
 
     return allEvents.slice(0, limit);
+  }
+
+  /**
+   * Fetch events from a calendar with server-side recurrence expansion.
+   *
+   * Why: tsdav's `fetchCalendarObjects` does not include `<C:expand>` in the
+   * REPORT body, so recurring events are returned as the recurrence master with
+   * its original DTSTART. This breaks time-windowed queries — a weekly event
+   * created in 2024 won't show up in a 2026 window.
+   *
+   * What: Issues a raw CalDAV REPORT (`calendar-query`) with both a
+   * `<C:time-range>` filter AND `<C:expand>` in the requested calendar-data
+   * property. The server returns one VEVENT per occurrence in the window, each
+   * with its expanded DTSTART and a RECURRENCE-ID identifying the instance.
+   *
+   * RFC 4791 §9.6.5: <C:expand> "MUST be transformed by the server into a
+   * collection of one or more VEVENT components, one per recurrence instance".
+   */
+  private async fetchExpandedEvents(
+    calendarUrl: string,
+    startISO: string,
+    endISO: string,
+  ): Promise<CalendarEvent[]> {
+    const startCal = toCalDateUTC(startISO);
+    const endCal = toCalDateUTC(endISO);
+
+    const reportBody = `<?xml version="1.0" encoding="UTF-8"?>
+<C:calendar-query xmlns:D="DAV:" xmlns:C="urn:ietf:params:xml:ns:caldav">
+  <D:prop>
+    <D:getetag/>
+    <C:calendar-data>
+      <C:expand start="${startCal}" end="${endCal}"/>
+    </C:calendar-data>
+  </D:prop>
+  <C:filter>
+    <C:comp-filter name="VCALENDAR">
+      <C:comp-filter name="VEVENT">
+        <C:time-range start="${startCal}" end="${endCal}"/>
+      </C:comp-filter>
+    </C:comp-filter>
+  </C:filter>
+</C:calendar-query>`;
+
+    const auth = Buffer.from(
+      `${this.config.username}:${this.config.password}`,
+    ).toString('base64');
+    // Ensure trailing slash on collection URL (CalDAV convention)
+    const url = calendarUrl.endsWith('/') ? calendarUrl : calendarUrl + '/';
+
+    const response = await fetch(url, {
+      method: 'REPORT',
+      headers: {
+        Authorization: `Basic ${auth}`,
+        Depth: '1',
+        'Content-Type': 'application/xml; charset=utf-8',
+      },
+      body: reportBody,
+    });
+
+    if (!response.ok) {
+      const body = await response.text().catch(() => '');
+      throw new Error(
+        `CalDAV expand REPORT failed: ${response.status} ${response.statusText}: ${body.slice(0, 300)}`,
+      );
+    }
+
+    const xml = await response.text();
+    return parseExpandedMultistatus(xml, calendarUrl);
   }
 
   async getCalendarEventById(eventId: string): Promise<CalendarEvent | null> {
@@ -393,7 +650,9 @@ export class CalDAVCalendarClient {
     }
 
     const uid = `${Date.now()}-${Math.random().toString(36).slice(2)}@fastmail-mcp`;
-    const now = new Date().toISOString().replace(/[-:]/g, '').replace(/\.\d{3}/, '');
+    const now = toCalDateUTC(new Date().toISOString());
+    const dtstart = toCalDateUTC(event.start);
+    const dtend = toCalDateUTC(event.end);
     const ical = [
       'BEGIN:VCALENDAR',
       'VERSION:2.0',
@@ -401,8 +660,8 @@ export class CalDAVCalendarClient {
       'BEGIN:VEVENT',
       `UID:${uid}`,
       `DTSTAMP:${now}`,
-      `DTSTART:${event.start.replace(/[-:]/g, '')}`,
-      `DTEND:${event.end.replace(/[-:]/g, '')}`,
+      `DTSTART:${dtstart}`,
+      `DTEND:${dtend}`,
       `SUMMARY:${escapeICalText(event.title)}`,
       event.description ? `DESCRIPTION:${escapeICalText(event.description)}` : '',
       event.location ? `LOCATION:${escapeICalText(event.location)}` : '',
@@ -410,11 +669,59 @@ export class CalDAVCalendarClient {
       'END:VCALENDAR',
     ].filter(Boolean).join('\r\n');
 
-    await client.createCalendarObject({
-      calendar: targetCal,
-      filename: `${uid}.ics`,
-      iCalString: ical,
-    });
+    // Issue PUT to CalDAV server. Wrap in try/catch and validate response so
+    // that we DO NOT return fake success when the server rejected the event.
+    let response: any;
+    try {
+      response = await client.createCalendarObject({
+        calendar: targetCal,
+        filename: `${uid}.ics`,
+        iCalString: ical,
+      });
+    } catch (err: any) {
+      throw new Error(`CalDAV PUT failed: ${err?.message || String(err)}`);
+    }
+
+    // Validate response — tsdav returns a Response (or array of them).
+    // Treat any non-ok status as a failure rather than silently returning success.
+    const responses = Array.isArray(response) ? response : [response];
+    for (const r of responses) {
+      if (r && typeof r === 'object' && 'ok' in r && !(r as Response).ok) {
+        const status = (r as Response).status;
+        let body = '';
+        try {
+          body = await (r as Response).text();
+        } catch {
+          // ignore body read failures
+        }
+        throw new Error(`CalDAV PUT returned ${status}: ${body.slice(0, 500)}`);
+      }
+    }
+
+    // Verify persistence with a follow-up GET against the calendar object URL.
+    // This catches the case where the server returns a 2xx but the event was
+    // not actually stored (e.g. silently dropped due to malformed iCal).
+    try {
+      const verifyUrl = `${targetCal.url.replace(/\/$/, '')}/${uid}.ics`;
+      const auth = Buffer.from(
+        `${this.config.username}:${this.config.password}`
+      ).toString('base64');
+      const verifyResp = await fetch(verifyUrl, {
+        method: 'GET',
+        headers: {
+          Authorization: `Basic ${auth}`,
+        },
+      });
+      if (!verifyResp.ok) {
+        throw new Error(
+          `Event PUT reported success but verification GET returned ${verifyResp.status}. Event was NOT persisted.`
+        );
+      }
+    } catch (err: any) {
+      throw new Error(
+        `Persistence verification failed: ${err?.message || String(err)}`
+      );
+    }
 
     return uid;
   }
