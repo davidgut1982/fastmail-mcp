@@ -840,4 +840,30 @@ export class CalDAVCalendarClient {
 
     return uid;
   }
+
+  async deleteCalendarEvent(eventId: string, calendarId: string): Promise<void> {
+    const client = await this.getClient();
+
+    if (!this.calendars) {
+      this.calendars = await client.fetchCalendars();
+    }
+
+    const targetCals = calendarId
+      ? this.calendars.filter(c => c.url === calendarId || c.displayName === calendarId)
+      : this.calendars;
+
+    for (const cal of targetCals) {
+      const objects = await client.fetchCalendarObjects({ calendar: cal });
+      for (const obj of objects) {
+        const vevent = extractVEvent(obj.data || '');
+        const uid = parseICalValue(vevent, 'UID');
+        if (uid === eventId || obj.url === eventId) {
+          await client.deleteCalendarObject({ calendarObject: obj });
+          return;
+        }
+      }
+    }
+
+    throw new Error(`Event ${eventId} not found in calendar ${calendarId}`);
+  }
 }

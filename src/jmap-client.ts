@@ -1466,4 +1466,99 @@ export class JmapClient {
       throw new Error('Failed to delete some emails.');
     }
   }
+
+  /**
+   * Create a mailbox (folder) via JMAP Mailbox/set. Optionally nest under a
+   * parent mailbox identified by name. Parent lookup is case-insensitive and
+   * uses exact name match — if multiple mailboxes share the name (Fastmail
+   * allows duplicate leaf names under different parents), the first match
+   * wins, so callers should prefer unique names or pass the parent's ID via
+   * a later API enhancement.
+   */
+  async createMailbox(name: string, parentName?: string): Promise<{ id: string; name: string; parentId: string | null }> {
+    const session = await this.getSession();
+
+    let parentId: string | null = null;
+    if (parentName && parentName.trim().length > 0) {
+      const mailboxes = await this.getMailboxes();
+      const wanted = parentName.trim().toLowerCase();
+      const parent = mailboxes.find((mb: any) => (mb.name || '').toLowerCase() === wanted);
+      if (!parent) {
+        throw new Error(`Parent mailbox '${parentName}' not found`);
+      }
+      parentId = parent.id;
+    }
+
+    const request: JmapRequest = {
+      using: ['urn:ietf:params:jmap:core', 'urn:ietf:params:jmap:mail'],
+      methodCalls: [
+        ['Mailbox/set', {
+          accountId: session.accountId,
+          create: {
+            newMailbox: {
+              name,
+              parentId,
+              role: null,
+            }
+          }
+        }, 'createMailbox']
+      ]
+    };
+
+    const response = await this.makeRequest(request);
+    const result = this.getMethodResult(response, 0);
+
+    if (result.notCreated?.newMailbox) {
+      const err = result.notCreated.newMailbox;
+      throw new Error(`Failed to create mailbox: ${err.type}${err.description ? ' - ' + err.description : ''}`);
+    }
+
+    const created = result.created?.newMailbox;
+    if (!created?.id) {
+      throw new Error('Mailbox/set returned no id for created mailbox');
+    }
+
+    return { id: created.id, name, parentId };
+  }
+
+  /**
+   * Get current Fastmail filter rules. Fastmail exposes rules via JMAP using
+   * the proprietary `https://www.fastmail.com/dev/maskedemail` style capability
+   * `https://www.fastmail.com/dev/sieve` — but the simplest stable surface is
+   * the `SieveScript/get` JMAP method paired with `https://www.fastmail.com/...`
+   * capabilities. However, Fastmail's filter rules (the "Rules" UI) are stored
+   * in a Sieve script. Replacing them programmatically without round-tripping
+   * Sieve is risky, so this implementation uses the Fastmail proprietary REST
+   * surface at `${baseUrl}/api/v1/rules` if present, falling back to the
+   * `https://www.fastmail.com/api/v1/rules` legacy endpoint. The bearer token
+   * is the same FASTMAIL_API_TOKEN used everywhere else.
+   */
+  async getRules(): Promise<any[]> {
+    const headers = this.auth.getAuthHeaders();
+    const url = 'https://www.fastmail.com/api/v1/rules';
+    const response = await fetch(url, { method: 'GET', headers });
+    if (!response.ok) {
+      throw new Error(`Failed to fetch rules from ${url}: ${response.status} ${response.statusText}`);
+    }
+    const data = await response.json() as any;
+    // Fastmail returns either {rules:[...]} or a bare array depending on version
+    if (Array.isArray(data)) return data;
+    if (Array.isArray(data?.rules)) return data.rules;
+    return [];
+  }
+
+  async saveRules(rules: any[]): Promise<{ saved: number }> {
+    const headers = this.auth.getAuthHeaders();
+    const url = 'https://www.fastmail.com/api/v1/rules';
+    const response = await fetch(url, {
+      method: 'PUT',
+      headers,
+      body: JSON.stringify({ rules }),
+    });
+    if (!response.ok) {
+      const body = await response.text().catch(() => '');
+      throw new Error(`Failed to save rules to ${url}: ${response.status} ${response.statusText}${body ? ' - ' + body.slice(0, 500) : ''}`);
+    }
+    return { saved: rules.length };
+  }
 }

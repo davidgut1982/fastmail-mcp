@@ -259,4 +259,33 @@ export class ContactsCalendarClient extends JmapClient {
       throw new Error(`Calendar event creation not supported: ${error instanceof Error ? error.message : String(error)}. Try checking account permissions or enabling calendar API access in Fastmail settings.`);
     }
   }
+
+  async deleteCalendarEvent(eventId: string): Promise<void> {
+    const hasPermission = await this.checkCalendarsPermission();
+    if (!hasPermission) {
+      throw new Error('Calendar access not available. Check Fastmail account settings or contact support to enable calendar API access.');
+    }
+
+    const session = await this.getSession();
+
+    const request: JmapRequest = {
+      using: ['urn:ietf:params:jmap:core', 'urn:ietf:params:jmap:calendars'],
+      methodCalls: [
+        ['CalendarEvent/set', {
+          accountId: session.accountId,
+          destroy: [eventId]
+        }, 'deleteEvent']
+      ]
+    };
+
+    try {
+      const response = await this.makeRequest(request);
+      const result = this.getMethodResult(response, 0);
+      if (result.notDestroyed?.[eventId]) {
+        throw new Error(`Event not destroyed: ${JSON.stringify(result.notDestroyed[eventId])}`);
+      }
+    } catch (error) {
+      throw new Error(`Calendar event deletion not supported: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
 }

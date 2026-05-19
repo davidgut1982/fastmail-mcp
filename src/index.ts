@@ -648,6 +648,28 @@ function buildToolsList() {
         },
       },
       {
+        name: 'delete_calendar_event',
+        description: 'Delete a calendar event from a Fastmail calendar. REQUIRES explicit user confirmation. Before calling this tool, you MUST: (1) show the user the exact event being deleted (title, start date, start time, location, calendar name), and (2) ask the user to confirm by typing the literal phrase "DELETE <eventId>" (substituting the actual eventId). The user must type this themselves — do NOT confirm on the user\'s behalf, do NOT generate the confirmation string yourself. Only call this tool after the user has typed the confirmation phrase. The tool will reject the call if the confirmation parameter does not exactly match "DELETE <eventId>".',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            eventId: {
+              type: 'string',
+              description: 'The event ID returned by list_calendar_events or get_calendar_event',
+            },
+            calendarId: {
+              type: 'string',
+              description: 'The CalDAV calendar URL where the event lives',
+            },
+            confirmation: {
+              type: 'string',
+              description: 'MUST be the literal string "DELETE <eventId>" where <eventId> is the same event ID passed above. The user must type this confirmation themselves; the tool will reject the call if this does not match.',
+            },
+          },
+          required: ['eventId', 'calendarId', 'confirmation'],
+        },
+      },
+      {
         name: 'list_identities',
         description: 'Lists sending identities on the user\'s FASTMAIL/JMAP mail account. Use this tool ONLY when the user explicitly references Fastmail or JMAP. For Gmail/Google Workspace mail, use the google-workspace tools instead. List sending identities (email addresses that can be used for sending).',
         inputSchema: {
@@ -717,7 +739,7 @@ function buildToolsList() {
       },
       {
         name: 'delete_email',
-        description: 'Deletes an email on the user\'s FASTMAIL/JMAP mail account. Use this tool ONLY when the user explicitly references Fastmail or JMAP. For Gmail/Google Workspace mail, use the google-workspace tools instead. Delete an email (move to trash).',
+        description: 'Delete an email. REQUIRES explicit user confirmation. Before calling this tool, you MUST: (1) show the user the email being deleted (subject, from, date), and (2) ask the user to type the literal phrase \'DELETE EMAIL <emailId>\' (substituting the actual emailId). The user must type this themselves — do NOT generate the confirmation on the user\'s behalf. The tool will reject the call if the confirmation does not exactly match. Use this tool ONLY when the user explicitly references Fastmail or JMAP. For Gmail/Google Workspace mail, use the google-workspace tools instead.',
         inputSchema: {
           type: 'object',
           properties: {
@@ -725,8 +747,12 @@ function buildToolsList() {
               type: 'string',
               description: 'ID of the email to delete',
             },
+            confirmation: {
+              type: 'string',
+              description: 'The confirmation phrase typed by the user: "DELETE EMAIL <emailId>" with the actual emailId substituted',
+            },
           },
-          required: ['emailId'],
+          required: ['emailId', 'confirmation'],
         },
       },
       {
@@ -975,7 +1001,7 @@ function buildToolsList() {
       },
       {
         name: 'bulk_delete',
-        description: 'Bulk-deletes emails on the user\'s FASTMAIL/JMAP mail account. Use this tool ONLY when the user explicitly references Fastmail or JMAP. For Gmail/Google Workspace mail, use the google-workspace tools instead. Delete multiple emails (move to trash).',
+        description: 'Delete multiple emails in bulk. REQUIRES explicit user confirmation. Before calling this tool, you MUST: (1) show the user the list of emails being deleted (count and a sample of subjects), and (2) ask the user to type the literal phrase \'BULK DELETE <N> EMAILS\' where <N> is the count of emails. The user must type this themselves — do NOT generate the confirmation. The tool will reject the call if the confirmation does not exactly match the count. Use this tool ONLY when the user explicitly references Fastmail or JMAP. For Gmail/Google Workspace mail, use the google-workspace tools instead.',
         inputSchema: {
           type: 'object',
           properties: {
@@ -984,8 +1010,12 @@ function buildToolsList() {
               items: { type: 'string' },
               description: 'Array of email IDs to delete',
             },
+            confirmation: {
+              type: 'string',
+              description: 'The confirmation phrase typed by the user: "BULK DELETE <N> EMAILS" where <N> is the exact count of emailIds being passed',
+            },
           },
-          required: ['emailIds'],
+          required: ['emailIds', 'confirmation'],
         },
       },
       {
@@ -1053,6 +1083,44 @@ function buildToolsList() {
               default: 3,
             },
           },
+        },
+      },
+      {
+        name: 'create_mailbox',
+        description: 'Creates a new mailbox/folder on the user\'s FASTMAIL/JMAP mail account. Use this tool ONLY when the user explicitly references Fastmail or JMAP. For Gmail/Google Workspace mail, use the google-workspace tools instead. Optionally nests the new mailbox under an existing parent (by name).',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            name: {
+              type: 'string',
+              description: 'Name of the new mailbox/folder to create',
+            },
+            parent_name: {
+              type: 'string',
+              description: 'Optional name of the parent mailbox. If provided, the new mailbox is created as a child of the parent (e.g. "Inbox" -> "Inbox/Ads"). Match is case-insensitive exact-name; if multiple mailboxes share the same name, the first match is used.',
+            },
+          },
+          required: ['name'],
+        },
+      },
+      {
+        name: 'import_rules',
+        description: 'Imports an array of Fastmail filter rules to the user\'s FASTMAIL account via the Fastmail REST API at https://www.fastmail.com/api/v1/rules. Use this tool ONLY when the user explicitly references Fastmail. Each rule object follows the Fastmail rule export format (fields: name, search, fileIn, markRead, markSpam, skipInbox, stop, combinator, conditions, etc.). When merge=true (default) the new rules are appended to existing rules; when merge=false, the new rules REPLACE the current rule set entirely (destructive).',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            rules: {
+              type: 'array',
+              items: { type: 'object' },
+              description: 'Array of Fastmail rule objects to import',
+            },
+            merge: {
+              type: 'boolean',
+              description: 'If true (default), append the new rules to the existing rule set. If false, REPLACE all existing rules with this array (destructive).',
+              default: true,
+            },
+          },
+          required: ['rules'],
         },
       },
     ];
@@ -1506,6 +1574,45 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         return { content: [{ type: 'text', text: JSON.stringify(updated, null, 2) }] };
       }
 
+      case 'delete_calendar_event': {
+        const { eventId, calendarId, confirmation } = args as any;
+        if (!eventId || !calendarId || !confirmation) {
+          throw new McpError(ErrorCode.InvalidParams, 'eventId, calendarId, and confirmation are required');
+        }
+
+        // Server-side confirmation gate — enforces the user-typed-phrase requirement
+        const expected = `DELETE ${eventId}`;
+        if (confirmation !== expected) {
+          return {
+            content: [{
+              type: 'text',
+              text: `Deletion ABORTED: confirmation phrase mismatch.\nExpected: "${expected}"\nReceived: "${confirmation}"\n\nThe user must explicitly type the confirmation phrase themselves. Do not generate it programmatically. Show the event details to the user and ask them to confirm by typing exactly: DELETE ${eventId}`
+            }],
+            isError: true
+          };
+        }
+
+        try {
+          const contactsClient = initializeContactsCalendarClient();
+          await contactsClient.deleteCalendarEvent(eventId);
+          return { content: [{ type: 'text', text: `Deleted event ${eventId} via JMAP` }] };
+        } catch (jmapErr) {
+          try {
+            const davClient = initializeCalDAVClient();
+            if (!davClient) {
+              throw new Error('CalDAV not configured. Set FASTMAIL_CALDAV_USERNAME and FASTMAIL_CALDAV_PASSWORD to use CalDAV fallback.');
+            }
+            await davClient.deleteCalendarEvent(eventId, calendarId);
+            return { content: [{ type: 'text', text: `Deleted event ${eventId} via CalDAV (JMAP failed: ${(jmapErr as Error).message})` }] };
+          } catch (caldavErr) {
+            return {
+              content: [{ type: 'text', text: `Deletion FAILED. JMAP error: ${(jmapErr as Error).message}. CalDAV error: ${(caldavErr as Error).message}` }],
+              isError: true
+            };
+          }
+        }
+      }
+
       case 'list_identities': {
         const client = initializeClient();
         const identities = await client.getIdentities();
@@ -1569,9 +1676,19 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       }
 
       case 'delete_email': {
-        const { emailId } = args as any;
+        const { emailId, confirmation } = args as any;
         if (!emailId) {
           throw new McpError(ErrorCode.InvalidParams, 'emailId is required');
+        }
+        const expected = `DELETE EMAIL ${emailId}`;
+        if (confirmation !== expected) {
+          return {
+            content: [{
+              type: 'text',
+              text: `Deletion ABORTED: confirmation phrase mismatch.\nExpected: "${expected}"\nReceived: "${confirmation}"\n\nThe user must explicitly type the confirmation phrase themselves. Do not generate it programmatically. Show the email details to the user and ask them to confirm by typing exactly: DELETE EMAIL ${emailId}`
+            }],
+            isError: true
+          };
         }
         const client = initializeClient();
         await client.deleteEmail(emailId);
@@ -1828,9 +1945,20 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       }
 
       case 'bulk_delete': {
-        const { emailIds } = args as any;
+        const { emailIds, confirmation } = args as any;
         if (!emailIds || !Array.isArray(emailIds) || emailIds.length === 0) {
           throw new McpError(ErrorCode.InvalidParams, 'emailIds array is required and must not be empty');
+        }
+        const count = emailIds.length;
+        const expected = `BULK DELETE ${count} EMAILS`;
+        if (confirmation !== expected) {
+          return {
+            content: [{
+              type: 'text',
+              text: `Bulk deletion ABORTED: confirmation phrase mismatch.\nExpected: "${expected}"\nReceived: "${confirmation}"\n\nThe user must explicitly type the confirmation phrase themselves. The number in the phrase must match the actual count of emailIds being deleted (${count}). Show the email list to the user and ask them to confirm by typing exactly: BULK DELETE ${count} EMAILS`
+            }],
+            isError: true
+          };
         }
         const client = initializeClient();
         await client.bulkDelete(emailIds);
@@ -1838,7 +1966,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           content: [
             {
               type: 'text',
-              text: `${emailIds.length} emails deleted successfully (moved to trash)`,
+              text: `${count} emails deleted successfully (moved to trash)`,
             },
           ],
         };
@@ -1921,7 +2049,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           },
           calendar: {
             available: !!session.capabilities['urn:ietf:params:jmap:calendars'],
-            functions: ['list_calendars', 'list_calendar_events', 'get_calendar_event', 'create_calendar_event'],
+            functions: ['list_calendars', 'list_calendar_events', 'get_calendar_event', 'create_calendar_event', 'delete_calendar_event'],
             note: session.capabilities['urn:ietf:params:jmap:calendars'] ? 
               'Calendar is available' : 
               'Calendar access not available - may require enabling in Fastmail account settings',
@@ -2042,6 +2170,57 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         }
       }
 
+      case 'create_mailbox': {
+        const { name: mailboxName, parent_name: parentName } = args as any;
+        if (!mailboxName || typeof mailboxName !== 'string' || mailboxName.trim().length === 0) {
+          throw new McpError(ErrorCode.InvalidParams, 'name is required and must be a non-empty string');
+        }
+        const client = initializeClient();
+        const result = await client.createMailbox(mailboxName.trim(), parentName);
+        return {
+          content: [
+            {
+              type: 'text',
+              text: JSON.stringify(result, null, 2),
+            },
+          ],
+        };
+      }
+
+      case 'import_rules': {
+        const { rules, merge = true } = args as any;
+        if (!Array.isArray(rules)) {
+          throw new McpError(ErrorCode.InvalidParams, 'rules must be an array of rule objects');
+        }
+        if (rules.length === 0) {
+          throw new McpError(ErrorCode.InvalidParams, 'rules array must not be empty');
+        }
+        const client = initializeClient();
+        let finalRules: any[];
+        let existingCount = 0;
+        if (merge) {
+          const existing = await client.getRules();
+          existingCount = existing.length;
+          finalRules = [...existing, ...rules];
+        } else {
+          finalRules = rules;
+        }
+        const result = await client.saveRules(finalRules);
+        return {
+          content: [
+            {
+              type: 'text',
+              text: JSON.stringify({
+                saved: result.saved,
+                added: rules.length,
+                existingBeforeImport: merge ? existingCount : null,
+                mode: merge ? 'merge' : 'replace',
+              }, null, 2),
+            },
+          ],
+        };
+      }
+
       default:
         throw new McpError(ErrorCode.MethodNotFound, `Unknown tool: ${name}`);
     }
@@ -2070,6 +2249,8 @@ async function runServer() {
   const transportType = transportIdx >= 0 ? args[transportIdx + 1] : 'stdio';
   const portIdx = args.indexOf('--port');
   const httpPort = portIdx >= 0 ? parseInt(args[portIdx + 1], 10) : 8001;
+  const hostIdx = args.indexOf('--host');
+  const httpHost = hostIdx >= 0 ? args[hostIdx + 1] : '127.0.0.1';
 
   if (transportType === 'http' || transportType === 'streamable-http') {
     // HTTP transport mode — stateful per-session pattern (MCP SDK standard).
@@ -2126,7 +2307,7 @@ async function runServer() {
       }
     });
 
-    app.listen(httpPort, '127.0.0.1', () => {
+    app.listen(httpPort, httpHost, () => {
       console.error(`Fastmail MCP server running on HTTP port ${httpPort}`);
     });
   } else {
