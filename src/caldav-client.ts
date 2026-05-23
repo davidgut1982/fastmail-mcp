@@ -1,4 +1,4 @@
-import { DAVClient, DAVCalendar, DAVCalendarObject } from 'tsdav';
+import { type DAVCalendar, type DAVCalendarObject, DAVClient } from "tsdav";
 
 export interface CalDAVConfig {
   username: string;
@@ -41,17 +41,17 @@ export function extractVEvent(data: string): string {
  */
 export function parseICalValue(vevent: string, key: string): string | undefined {
   // Match KEY followed by either ; (params) or : (value), capturing the rest
-  const regex = new RegExp(`^(${key}[;:].*)$`, 'm');
+  const regex = new RegExp(`^(${key}[;:].*)$`, "m");
   const match = vevent.match(regex);
   if (!match) return undefined;
 
   // Handle line folding: continuation lines start with space or tab
   let fullLine = match[1];
   const lines = vevent.split(/\r?\n/);
-  const matchIdx = lines.findIndex(l => l === fullLine || l.startsWith(fullLine));
+  const matchIdx = lines.findIndex((l) => l === fullLine || l.startsWith(fullLine));
   if (matchIdx >= 0) {
     for (let i = matchIdx + 1; i < lines.length; i++) {
-      if (lines[i].startsWith(' ') || lines[i].startsWith('\t')) {
+      if (lines[i].startsWith(" ") || lines[i].startsWith("\t")) {
         fullLine += lines[i].substring(1);
       } else {
         break;
@@ -63,7 +63,7 @@ export function parseICalValue(vevent: string, key: string): string | undefined 
   // For DTSTART;TZID=Europe/Rome:20260320T083000 → 20260320T083000
   // For DTSTART:20220210T154500Z → 20220210T154500Z
   // For DTSTART;VALUE=DATE:20260324 → 20260324
-  const colonIdx = fullLine.indexOf(':');
+  const colonIdx = fullLine.indexOf(":");
   if (colonIdx === -1) return undefined;
   return fullLine.substring(colonIdx + 1).trim();
 }
@@ -75,7 +75,7 @@ export function parseICalValue(vevent: string, key: string): string | undefined 
  */
 export function formatICalDate(raw: string | undefined): string | undefined {
   if (!raw) return undefined;
-  const cleaned = raw.replace(/\r/g, '');
+  const cleaned = raw.replace(/\r/g, "");
 
   // All-day date: 20260324 (8 digits)
   if (/^\d{8}$/.test(cleaned)) {
@@ -93,17 +93,17 @@ export function formatICalDate(raw: string | undefined): string | undefined {
 }
 
 export function parseCalendarObject(obj: DAVCalendarObject): CalendarEvent {
-  const vevent = extractVEvent(obj.data || '');
-  const title = parseICalValue(vevent, 'SUMMARY') || 'Untitled';
-  const description = parseICalValue(vevent, 'DESCRIPTION');
-  const rawStart = parseICalValue(vevent, 'DTSTART');
-  const rawEnd = parseICalValue(vevent, 'DTEND');
-  const location = parseICalValue(vevent, 'LOCATION');
-  const uid = parseICalValue(vevent, 'UID') || obj.url || '';
+  const vevent = extractVEvent(obj.data || "");
+  const title = parseICalValue(vevent, "SUMMARY") || "Untitled";
+  const description = parseICalValue(vevent, "DESCRIPTION");
+  const rawStart = parseICalValue(vevent, "DTSTART");
+  const rawEnd = parseICalValue(vevent, "DTEND");
+  const location = parseICalValue(vevent, "LOCATION");
+  const uid = parseICalValue(vevent, "UID") || obj.url || "";
 
   return {
     id: uid,
-    url: obj.url || '',
+    url: obj.url || "",
     title: unescapeICalText(title),
     description: description ? unescapeICalText(description) : undefined,
     start: formatICalDate(rawStart),
@@ -118,10 +118,10 @@ export function parseCalendarObject(obj: DAVCalendarObject): CalendarEvent {
  */
 export function unescapeICalText(value: string): string {
   return value
-    .replace(/\\n/gi, '\n')
-    .replace(/\\;/g, ';')
-    .replace(/\\,/g, ',')
-    .replace(/\\\\/g, '\\');
+    .replace(/\\n/gi, "\n")
+    .replace(/\\;/g, ";")
+    .replace(/\\,/g, ",")
+    .replace(/\\\\/g, "\\");
 }
 
 /**
@@ -130,10 +130,10 @@ export function unescapeICalText(value: string): string {
  */
 export function escapeICalText(value: string): string {
   return value
-    .replace(/\\/g, '\\\\')
-    .replace(/;/g, '\\;')
-    .replace(/,/g, '\\,')
-    .replace(/\r?\n/g, '\\n');
+    .replace(/\\/g, "\\\\")
+    .replace(/;/g, "\\;")
+    .replace(/,/g, "\\,")
+    .replace(/\r?\n/g, "\\n");
 }
 
 export class CalDAVCalendarClient {
@@ -149,13 +149,13 @@ export class CalDAVCalendarClient {
     if (this.client) return this.client;
 
     this.client = new DAVClient({
-      serverUrl: this.config.serverUrl || 'https://caldav.fastmail.com',
+      serverUrl: this.config.serverUrl || "https://caldav.fastmail.com",
       credentials: {
         username: this.config.username,
         password: this.config.password,
       },
-      authMethod: 'Basic',
-      defaultAccountType: 'caldav',
+      authMethod: "Basic",
+      defaultAccountType: "caldav",
     });
 
     await this.client.login();
@@ -168,17 +168,22 @@ export class CalDAVCalendarClient {
     this.calendars = calendars;
 
     return calendars
-      .filter(c => c.displayName !== 'DEFAULT_TASK_CALENDAR_NAME')
-      .map(c => ({
-        id: c.url || '',
-        displayName: String(c.displayName || 'Unnamed'),
-        url: c.url || '',
+      .filter((c) => c.displayName !== "DEFAULT_TASK_CALENDAR_NAME")
+      .map((c) => ({
+        id: c.url || "",
+        displayName: String(c.displayName || "Unnamed"),
+        url: c.url || "",
         description: c.description || undefined,
         color: (c as any).calendarColor || undefined,
       }));
   }
 
-  async getCalendarEvents(calendarId?: string, limit: number = 50, startDate?: string, endDate?: string): Promise<CalendarEvent[]> {
+  async getCalendarEvents(
+    calendarId?: string,
+    limit = 50,
+    startDate?: string,
+    endDate?: string
+  ): Promise<CalendarEvent[]> {
     const client = await this.getClient();
 
     if (!this.calendars) {
@@ -186,19 +191,19 @@ export class CalDAVCalendarClient {
     }
 
     let targetCalendars = this.calendars.filter(
-      c => c.displayName !== 'DEFAULT_TASK_CALENDAR_NAME'
+      (c) => c.displayName !== "DEFAULT_TASK_CALENDAR_NAME"
     );
     if (calendarId) {
       targetCalendars = targetCalendars.filter(
-        c => c.url === calendarId || c.displayName === calendarId
+        (c) => c.url === calendarId || c.displayName === calendarId
       );
     }
 
     const fetchOptions: any = {};
     if (startDate || endDate) {
       fetchOptions.timeRange = {
-        start: startDate || '1970-01-01T00:00:00Z',
-        end: endDate || '2099-12-31T23:59:59Z',
+        start: startDate || "1970-01-01T00:00:00Z",
+        end: endDate || "2099-12-31T23:59:59Z",
       };
     }
 
@@ -212,7 +217,7 @@ export class CalDAVCalendarClient {
     }
 
     // Sort by start date ascending
-    allEvents.sort((a, b) => (a.start || '').localeCompare(b.start || ''));
+    allEvents.sort((a, b) => (a.start || "").localeCompare(b.start || ""));
 
     return allEvents.slice(0, limit);
   }
@@ -227,8 +232,8 @@ export class CalDAVCalendarClient {
     for (const cal of this.calendars) {
       const objects = await client.fetchCalendarObjects({ calendar: cal });
       for (const obj of objects) {
-        const vevent = extractVEvent(obj.data || '');
-        const uid = parseICalValue(vevent, 'UID');
+        const vevent = extractVEvent(obj.data || "");
+        const uid = parseICalValue(vevent, "UID");
         if (uid === eventId || obj.url === eventId) {
           return parseCalendarObject(obj);
         }
@@ -246,15 +251,18 @@ export class CalDAVCalendarClient {
    * Test: Create an event, call updateCalendarEvent with a new title, then
    *       getCalendarEventById and assert the title changed while other fields are preserved.
    */
-  async updateCalendarEvent(eventId: string, updates: {
-    title?: string;
-    description?: string;
-    start?: string;
-    end?: string;
-    location?: string;
-    participants?: string[];
-    attachments?: string[];
-  }): Promise<CalendarEvent> {
+  async updateCalendarEvent(
+    eventId: string,
+    updates: {
+      title?: string;
+      description?: string;
+      start?: string;
+      end?: string;
+      location?: string;
+      participants?: string[];
+      attachments?: string[];
+    }
+  ): Promise<CalendarEvent> {
     const client = await this.getClient();
 
     if (!this.calendars) {
@@ -266,8 +274,8 @@ export class CalDAVCalendarClient {
     for (const cal of this.calendars) {
       const objects = await client.fetchCalendarObjects({ calendar: cal });
       for (const obj of objects) {
-        const vevent = extractVEvent(obj.data || '');
-        const uid = parseICalValue(vevent, 'UID');
+        const vevent = extractVEvent(obj.data || "");
+        const uid = parseICalValue(vevent, "UID");
         if (uid === eventId || obj.url === eventId) {
           targetObj = obj;
           break;
@@ -280,13 +288,13 @@ export class CalDAVCalendarClient {
       throw new Error(`Calendar event not found: ${eventId}`);
     }
 
-    const originalData = targetObj.data || '';
+    const originalData = targetObj.data || "";
 
     // Replace or set a property within the VEVENT block.
     // If the property exists, replace it; otherwise insert before END:VEVENT.
     const setVEventProp = (ics: string, key: string, value: string): string => {
       // Remove any existing line(s) for this key (including folded continuations)
-      const keyPattern = new RegExp(`^${key}[;:].*(?:\\r?\\n[ \\t].*)*`, 'gm');
+      const keyPattern = new RegExp(`^${key}[;:].*(?:\\r?\\n[ \\t].*)*`, "gm");
       if (keyPattern.test(ics)) {
         return ics.replace(keyPattern, `${key}:${value}`);
       }
@@ -296,29 +304,33 @@ export class CalDAVCalendarClient {
 
     let updatedIcs = originalData;
 
-    if (updates.title !== undefined && updates.title !== null && updates.title !== '') {
-      updatedIcs = setVEventProp(updatedIcs, 'SUMMARY', escapeICalText(updates.title));
+    if (updates.title !== undefined && updates.title !== null && updates.title !== "") {
+      updatedIcs = setVEventProp(updatedIcs, "SUMMARY", escapeICalText(updates.title));
     }
-    if (updates.description !== undefined && updates.description !== null && updates.description !== '') {
-      updatedIcs = setVEventProp(updatedIcs, 'DESCRIPTION', escapeICalText(updates.description));
+    if (
+      updates.description !== undefined &&
+      updates.description !== null &&
+      updates.description !== ""
+    ) {
+      updatedIcs = setVEventProp(updatedIcs, "DESCRIPTION", escapeICalText(updates.description));
     }
-    if (updates.location !== undefined && updates.location !== null && updates.location !== '') {
-      updatedIcs = setVEventProp(updatedIcs, 'LOCATION', escapeICalText(updates.location));
+    if (updates.location !== undefined && updates.location !== null && updates.location !== "") {
+      updatedIcs = setVEventProp(updatedIcs, "LOCATION", escapeICalText(updates.location));
     }
-    if (updates.start !== undefined && updates.start !== null && updates.start !== '') {
+    if (updates.start !== undefined && updates.start !== null && updates.start !== "") {
       // Preserve existing DTSTART params (e.g. TZID) when replacing the value
       const existingDtstart = originalData.match(/^(DTSTART[^:]*):.*$/m);
-      const dtstartKey = existingDtstart ? existingDtstart[1] : 'DTSTART';
-      const dtstartVal = updates.start.replace(/[-:]/g, '').replace(/\.\d{3}/, '');
+      const dtstartKey = existingDtstart ? existingDtstart[1] : "DTSTART";
+      const dtstartVal = updates.start.replace(/[-:]/g, "").replace(/\.\d{3}/, "");
       updatedIcs = updatedIcs.replace(
         /^DTSTART[^\r\n]*(\r?\n[ \t][^\r\n]*)*/m,
         `${dtstartKey}:${dtstartVal}`
       );
     }
-    if (updates.end !== undefined && updates.end !== null && updates.end !== '') {
+    if (updates.end !== undefined && updates.end !== null && updates.end !== "") {
       const existingDtend = originalData.match(/^(DTEND[^:]*):.*$/m);
-      const dtendKey = existingDtend ? existingDtend[1] : 'DTEND';
-      const dtendVal = updates.end.replace(/[-:]/g, '').replace(/\.\d{3}/, '');
+      const dtendKey = existingDtend ? existingDtend[1] : "DTEND";
+      const dtendVal = updates.end.replace(/[-:]/g, "").replace(/\.\d{3}/, "");
       updatedIcs = updatedIcs.replace(
         /^DTEND[^\r\n]*(\r?\n[ \t][^\r\n]*)*/m,
         `${dtendKey}:${dtendVal}`
@@ -326,38 +338,49 @@ export class CalDAVCalendarClient {
     }
     if (updates.participants !== undefined) {
       // Remove all existing ATTENDEE lines
-      updatedIcs = updatedIcs.replace(/^ATTENDEE[^\r\n]*(\r?\n[ \t][^\r\n]*)*/gm, '');
+      updatedIcs = updatedIcs.replace(/^ATTENDEE[^\r\n]*(\r?\n[ \t][^\r\n]*)*/gm, "");
       // Remove blank lines left behind
-      updatedIcs = updatedIcs.replace(/(\r?\n){2,}/g, '\r\n');
+      updatedIcs = updatedIcs.replace(/(\r?\n){2,}/g, "\r\n");
       // Insert new ATTENDEE lines before END:VEVENT
       const attendeeLines = updates.participants
-        .map(email => `ATTENDEE;CN=${email}:mailto:${email}`)
-        .join('\r\n');
+        .map((email) => `ATTENDEE;CN=${email}:mailto:${email}`)
+        .join("\r\n");
       if (attendeeLines) {
         updatedIcs = updatedIcs.replace(/END:VEVENT/, `${attendeeLines}\r\nEND:VEVENT`);
       }
     }
     if (updates.attachments !== undefined && updates.attachments.length > 0) {
       // Remove existing ATTACH lines
-      updatedIcs = updatedIcs.replace(/^ATTACH[^\r\n]*(\r?\n[ \t][^\r\n]*)*/gm, '');
-      updatedIcs = updatedIcs.replace(/(\r?\n){2,}/g, '\r\n');
+      updatedIcs = updatedIcs.replace(/^ATTACH[^\r\n]*(\r?\n[ \t][^\r\n]*)*/gm, "");
+      updatedIcs = updatedIcs.replace(/(\r?\n){2,}/g, "\r\n");
       // Add new ATTACH lines before END:VEVENT
-      const fs = await import('fs');
-      const attachLines = updates.attachments.map(filePath => {
-        const ext = filePath.split('.').pop()?.toLowerCase() ?? 'bin';
-        const mimeMap: Record<string, string> = { jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', pdf: 'application/pdf', gif: 'image/gif' };
-        const mime = mimeMap[ext] ?? 'application/octet-stream';
-        const data = fs.readFileSync(filePath);
-        const b64 = data.toString('base64');
-        // Fold base64 at 75 chars per RFC 5545
-        const folded = b64.match(/.{1,75}/g)?.join('\r\n ') ?? b64;
-        return `ATTACH;ENCODING=BASE64;FMTTYPE=${mime}:\r\n ${folded}`;
-      }).join('\r\n');
+      const fs = await import("fs");
+      const attachLines = updates.attachments
+        .map((filePath) => {
+          const ext = filePath.split(".").pop()?.toLowerCase() ?? "bin";
+          const mimeMap: Record<string, string> = {
+            jpg: "image/jpeg",
+            jpeg: "image/jpeg",
+            png: "image/png",
+            pdf: "application/pdf",
+            gif: "image/gif",
+          };
+          const mime = mimeMap[ext] ?? "application/octet-stream";
+          const data = fs.readFileSync(filePath);
+          const b64 = data.toString("base64");
+          // Fold base64 at 75 chars per RFC 5545
+          const folded = b64.match(/.{1,75}/g)?.join("\r\n ") ?? b64;
+          return `ATTACH;ENCODING=BASE64;FMTTYPE=${mime}:\r\n ${folded}`;
+        })
+        .join("\r\n");
       updatedIcs = updatedIcs.replace(/END:VEVENT/, `${attachLines}\r\nEND:VEVENT`);
     }
 
     // Bump DTSTAMP to now
-    const now = new Date().toISOString().replace(/[-:]/g, '').replace(/\.\d{3}/, '');
+    const now = new Date()
+      .toISOString()
+      .replace(/[-:]/g, "")
+      .replace(/\.\d{3}/, "");
     updatedIcs = updatedIcs.replace(/^DTSTAMP:.*$/m, `DTSTAMP:${now}`);
 
     await client.updateCalendarObject({
@@ -386,29 +409,34 @@ export class CalDAVCalendarClient {
     }
 
     const targetCal = this.calendars.find(
-      c => c.url === event.calendarId || c.displayName === event.calendarId
+      (c) => c.url === event.calendarId || c.displayName === event.calendarId
     );
     if (!targetCal) {
       throw new Error(`Calendar not found: ${event.calendarId}`);
     }
 
     const uid = `${Date.now()}-${Math.random().toString(36).slice(2)}@fastmail-mcp`;
-    const now = new Date().toISOString().replace(/[-:]/g, '').replace(/\.\d{3}/, '');
+    const now = new Date()
+      .toISOString()
+      .replace(/[-:]/g, "")
+      .replace(/\.\d{3}/, "");
     const ical = [
-      'BEGIN:VCALENDAR',
-      'VERSION:2.0',
-      'PRODID:-//fastmail-mcp//CalDAV//EN',
-      'BEGIN:VEVENT',
+      "BEGIN:VCALENDAR",
+      "VERSION:2.0",
+      "PRODID:-//fastmail-mcp//CalDAV//EN",
+      "BEGIN:VEVENT",
       `UID:${uid}`,
       `DTSTAMP:${now}`,
-      `DTSTART:${event.start.replace(/[-:]/g, '')}`,
-      `DTEND:${event.end.replace(/[-:]/g, '')}`,
+      `DTSTART:${event.start.replace(/[-:]/g, "")}`,
+      `DTEND:${event.end.replace(/[-:]/g, "")}`,
       `SUMMARY:${escapeICalText(event.title)}`,
-      event.description ? `DESCRIPTION:${escapeICalText(event.description)}` : '',
-      event.location ? `LOCATION:${escapeICalText(event.location)}` : '',
-      'END:VEVENT',
-      'END:VCALENDAR',
-    ].filter(Boolean).join('\r\n');
+      event.description ? `DESCRIPTION:${escapeICalText(event.description)}` : "",
+      event.location ? `LOCATION:${escapeICalText(event.location)}` : "",
+      "END:VEVENT",
+      "END:VCALENDAR",
+    ]
+      .filter(Boolean)
+      .join("\r\n");
 
     await client.createCalendarObject({
       calendar: targetCal,

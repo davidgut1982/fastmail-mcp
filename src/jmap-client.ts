@@ -1,7 +1,7 @@
-import { FastmailAuth } from './auth.js';
-import { writeFile, mkdir } from 'fs/promises';
-import { dirname, resolve, normalize } from 'path';
-import { homedir } from 'os';
+import { homedir } from "os";
+import { dirname, normalize, resolve } from "path";
+import { mkdir, writeFile } from "fs/promises";
+import type { FastmailAuth } from "./auth.js";
 
 export interface JmapSession {
   apiUrl: string;
@@ -43,8 +43,10 @@ export class JmapClient {
       throw new Error(`JMAP response entry at index ${index} is malformed`);
     }
     const [tag, result] = entry;
-    if (tag === 'error') {
-      throw new Error(`JMAP error: ${result.type}${result.description ? ' - ' + result.description : ''}`);
+    if (tag === "error") {
+      throw new Error(
+        `JMAP error: ${result.type}${result.description ? " - " + result.description : ""}`
+      );
     }
     return result;
   }
@@ -63,24 +65,25 @@ export class JmapClient {
     }
 
     const response = await fetch(this.auth.getSessionUrl(), {
-      method: 'GET',
-      headers: this.auth.getAuthHeaders()
+      method: "GET",
+      headers: this.auth.getAuthHeaders(),
     });
 
     if (!response.ok) {
       throw new Error(`Failed to get session: ${response.statusText}`);
     }
 
-    const sessionData = await response.json() as any;
-    
+    const sessionData = (await response.json()) as any;
+
     this.session = {
       apiUrl: sessionData.apiUrl,
-      accountId: sessionData.primaryAccounts?.['urn:ietf:params:jmap:mail']
-        || sessionData.primaryAccounts?.['urn:ietf:params:jmap:core']
-        || Object.keys(sessionData.accounts)[0],
+      accountId:
+        sessionData.primaryAccounts?.["urn:ietf:params:jmap:mail"] ||
+        sessionData.primaryAccounts?.["urn:ietf:params:jmap:core"] ||
+        Object.keys(sessionData.accounts)[0],
       capabilities: sessionData.capabilities,
       downloadUrl: sessionData.downloadUrl,
-      uploadUrl: sessionData.uploadUrl
+      uploadUrl: sessionData.uploadUrl,
     };
 
     return this.session;
@@ -89,20 +92,20 @@ export class JmapClient {
   async getUserEmail(): Promise<string> {
     try {
       const identity = await this.getDefaultIdentity();
-      return identity?.email || 'user@example.com';
+      return identity?.email || "user@example.com";
     } catch (error) {
       // Fallback if Identity/get is not available
-      return 'user@example.com';
+      return "user@example.com";
     }
   }
 
   async makeRequest(request: JmapRequest): Promise<JmapResponse> {
     const session = await this.getSession();
-    
+
     const response = await fetch(session.apiUrl, {
-      method: 'POST',
+      method: "POST",
       headers: this.auth.getAuthHeaders(),
-      body: JSON.stringify(request)
+      body: JSON.stringify(request),
     });
 
     if (!response.ok) {
@@ -111,50 +114,73 @@ export class JmapClient {
 
     const data = await response.json();
     if (!data || !Array.isArray(data.methodResponses)) {
-      throw new Error('Invalid JMAP response: missing or malformed methodResponses');
+      throw new Error("Invalid JMAP response: missing or malformed methodResponses");
     }
     return data as JmapResponse;
   }
 
-  protected findMailboxByRoleOrName(mailboxes: any[], role: string, nameFallback?: string): any | undefined {
-    return mailboxes.find(mb => mb.role === role) ||
-           (nameFallback ? mailboxes.find(mb => mb.name.toLowerCase().includes(nameFallback)) : undefined);
+  protected findMailboxByRoleOrName(
+    mailboxes: any[],
+    role: string,
+    nameFallback?: string
+  ): any | undefined {
+    return (
+      mailboxes.find((mb) => mb.role === role) ||
+      (nameFallback
+        ? mailboxes.find((mb) => mb.name.toLowerCase().includes(nameFallback))
+        : undefined)
+    );
   }
 
   async getMailboxes(): Promise<any[]> {
     const session = await this.getSession();
-    
+
     const request: JmapRequest = {
-      using: ['urn:ietf:params:jmap:core', 'urn:ietf:params:jmap:mail'],
-      methodCalls: [
-        ['Mailbox/get', { accountId: session.accountId }, 'mailboxes']
-      ]
+      using: ["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:mail"],
+      methodCalls: [["Mailbox/get", { accountId: session.accountId }, "mailboxes"]],
     };
 
     const response = await this.makeRequest(request);
     return this.getListResult(response, 0);
   }
 
-  async getEmails(mailboxId?: string, limit: number = 20, ascending: boolean = false): Promise<any[]> {
+  async getEmails(mailboxId?: string, limit = 20, ascending = false): Promise<any[]> {
     const session = await this.getSession();
 
     const filter = mailboxId ? { inMailbox: mailboxId } : {};
 
     const request: JmapRequest = {
-      using: ['urn:ietf:params:jmap:core', 'urn:ietf:params:jmap:mail'],
+      using: ["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:mail"],
       methodCalls: [
-        ['Email/query', {
-          accountId: session.accountId,
-          filter,
-          sort: [{ property: 'receivedAt', isAscending: ascending }],
-          limit
-        }, 'query'],
-        ['Email/get', {
-          accountId: session.accountId,
-          '#ids': { resultOf: 'query', name: 'Email/query', path: '/ids' },
-          properties: ['id', 'subject', 'from', 'to', 'replyTo', 'receivedAt', 'preview', 'hasAttachment']
-        }, 'emails']
-      ]
+        [
+          "Email/query",
+          {
+            accountId: session.accountId,
+            filter,
+            sort: [{ property: "receivedAt", isAscending: ascending }],
+            limit,
+          },
+          "query",
+        ],
+        [
+          "Email/get",
+          {
+            accountId: session.accountId,
+            "#ids": { resultOf: "query", name: "Email/query", path: "/ids" },
+            properties: [
+              "id",
+              "subject",
+              "from",
+              "to",
+              "replyTo",
+              "receivedAt",
+              "preview",
+              "hasAttachment",
+            ],
+          },
+          "emails",
+        ],
+      ],
     };
 
     const response = await this.makeRequest(request);
@@ -163,19 +189,42 @@ export class JmapClient {
 
   async getEmailById(id: string): Promise<any> {
     const session = await this.getSession();
-    
+
     const request: JmapRequest = {
-      using: ['urn:ietf:params:jmap:core', 'urn:ietf:params:jmap:mail'],
+      using: ["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:mail"],
       methodCalls: [
-        ['Email/get', {
-          accountId: session.accountId,
-          ids: [id],
-          properties: ['id', 'subject', 'from', 'to', 'cc', 'bcc', 'replyTo', 'receivedAt', 'textBody', 'htmlBody', 'attachments', 'bodyValues', 'messageId', 'threadId', 'inReplyTo', 'references', 'keywords', 'header:List-Unsubscribe:asURLs'],
-          bodyProperties: ['partId', 'blobId', 'type', 'size'],
-          fetchTextBodyValues: true,
-          fetchHTMLBodyValues: true,
-        }, 'email']
-      ]
+        [
+          "Email/get",
+          {
+            accountId: session.accountId,
+            ids: [id],
+            properties: [
+              "id",
+              "subject",
+              "from",
+              "to",
+              "cc",
+              "bcc",
+              "replyTo",
+              "receivedAt",
+              "textBody",
+              "htmlBody",
+              "attachments",
+              "bodyValues",
+              "messageId",
+              "threadId",
+              "inReplyTo",
+              "references",
+              "keywords",
+              "header:List-Unsubscribe:asURLs",
+            ],
+            bodyProperties: ["partId", "blobId", "type", "size"],
+            fetchTextBodyValues: true,
+            fetchHTMLBodyValues: true,
+          },
+          "email",
+        ],
+      ],
     };
 
     const response = await this.makeRequest(request);
@@ -189,20 +238,24 @@ export class JmapClient {
     if (!email) {
       throw new Error(`Email with ID '${id}' not found or not accessible`);
     }
-    
+
     return email;
   }
 
   async getIdentities(): Promise<any[]> {
     const session = await this.getSession();
-    
+
     const request: JmapRequest = {
-      using: ['urn:ietf:params:jmap:core', 'urn:ietf:params:jmap:submission'],
+      using: ["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:submission"],
       methodCalls: [
-        ['Identity/get', {
-          accountId: session.accountId
-        }, 'identities']
-      ]
+        [
+          "Identity/get",
+          {
+            accountId: session.accountId,
+          },
+          "identities",
+        ],
+      ],
     };
 
     const response = await this.makeRequest(request);
@@ -211,7 +264,7 @@ export class JmapClient {
 
   async getDefaultIdentity(): Promise<any> {
     const identities = await this.getIdentities();
-    
+
     // Find the default identity (usually the one that can't be deleted)
     return identities.find((id: any) => id.mayDelete === false) || identities[0];
   }
@@ -234,36 +287,38 @@ export class JmapClient {
     // Get all identities to validate from address
     const identities = await this.getIdentities();
     if (!identities || identities.length === 0) {
-      throw new Error('No sending identities found');
+      throw new Error("No sending identities found");
     }
 
     // Determine which identity to use
     let selectedIdentity;
     if (email.from) {
       // Validate that the from address matches an available identity
-      selectedIdentity = identities.find(id => 
-        id.email.toLowerCase() === email.from?.toLowerCase()
+      selectedIdentity = identities.find(
+        (id) => id.email.toLowerCase() === email.from?.toLowerCase()
       );
       if (!selectedIdentity) {
-        throw new Error('From address is not verified for sending. Choose one of your verified identities.');
+        throw new Error(
+          "From address is not verified for sending. Choose one of your verified identities."
+        );
       }
     } else {
       // Use default identity
-      selectedIdentity = identities.find(id => id.mayDelete === false) || identities[0];
+      selectedIdentity = identities.find((id) => id.mayDelete === false) || identities[0];
     }
 
     const fromEmail = selectedIdentity.email;
 
     // Get the mailbox IDs we need
     const mailboxes = await this.getMailboxes();
-    const draftsMailbox = this.findMailboxByRoleOrName(mailboxes, 'drafts', 'draft');
-    const sentMailbox = this.findMailboxByRoleOrName(mailboxes, 'sent', 'sent');
+    const draftsMailbox = this.findMailboxByRoleOrName(mailboxes, "drafts", "draft");
+    const sentMailbox = this.findMailboxByRoleOrName(mailboxes, "sent", "sent");
 
     if (!draftsMailbox) {
-      throw new Error('Could not find Drafts mailbox to save email');
+      throw new Error("Could not find Drafts mailbox to save email");
     }
     if (!sentMailbox) {
-      throw new Error('Could not find Sent mailbox to move email after sending');
+      throw new Error("Could not find Sent mailbox to move email after sending");
     }
 
     // Use provided mailboxId or default to drafts for initial creation
@@ -271,7 +326,7 @@ export class JmapClient {
 
     // Ensure we have at least one body type
     if (!email.textBody && !email.htmlBody) {
-      throw new Error('Either textBody or htmlBody must be provided');
+      throw new Error("Either textBody or htmlBody must be provided");
     }
 
     const initialMailboxIds: Record<string, boolean> = {};
@@ -284,48 +339,60 @@ export class JmapClient {
       mailboxIds: initialMailboxIds,
       keywords: { $draft: true },
       from: [{ name: selectedIdentity.name, email: fromEmail }],
-      to: email.to.map(addr => ({ email: addr })),
-      cc: email.cc?.map(addr => ({ email: addr })) || [],
-      bcc: email.bcc?.map(addr => ({ email: addr })) || [],
+      to: email.to.map((addr) => ({ email: addr })),
+      cc: email.cc?.map((addr) => ({ email: addr })) || [],
+      bcc: email.bcc?.map((addr) => ({ email: addr })) || [],
       subject: email.subject,
       ...(email.inReplyTo && { inReplyTo: email.inReplyTo }),
       ...(email.references && { references: email.references }),
-      ...(email.replyTo?.length && { replyTo: email.replyTo.map(addr => ({ email: addr })) }),
-      textBody: email.textBody ? [{ partId: 'text', type: 'text/plain' }] : undefined,
-      htmlBody: email.htmlBody ? [{ partId: 'html', type: 'text/html' }] : undefined,
+      ...(email.replyTo?.length && { replyTo: email.replyTo.map((addr) => ({ email: addr })) }),
+      textBody: email.textBody ? [{ partId: "text", type: "text/plain" }] : undefined,
+      htmlBody: email.htmlBody ? [{ partId: "html", type: "text/html" }] : undefined,
       bodyValues: {
         ...(email.textBody && { text: { value: email.textBody } }),
-        ...(email.htmlBody && { html: { value: email.htmlBody } })
-      }
+        ...(email.htmlBody && { html: { value: email.htmlBody } }),
+      },
     };
 
     const request: JmapRequest = {
-      using: ['urn:ietf:params:jmap:core', 'urn:ietf:params:jmap:mail', 'urn:ietf:params:jmap:submission'],
+      using: [
+        "urn:ietf:params:jmap:core",
+        "urn:ietf:params:jmap:mail",
+        "urn:ietf:params:jmap:submission",
+      ],
       methodCalls: [
-        ['Email/set', {
-          accountId: session.accountId,
-          create: { draft: emailObject }
-        }, 'createEmail'],
-        ['EmailSubmission/set', {
-          accountId: session.accountId,
-          create: {
-            submission: {
-              emailId: '#draft',
-              identityId: selectedIdentity.id,
-              envelope: {
-                mailFrom: { email: fromEmail },
-                rcptTo: email.to.map(addr => ({ email: addr }))
-              }
-            }
+        [
+          "Email/set",
+          {
+            accountId: session.accountId,
+            create: { draft: emailObject },
           },
-          onSuccessUpdateEmail: {
-            '#submission': {
-              mailboxIds: sentMailboxIds,
-              keywords: { $seen: true }
-            }
-          }
-        }, 'submitEmail']
-      ]
+          "createEmail",
+        ],
+        [
+          "EmailSubmission/set",
+          {
+            accountId: session.accountId,
+            create: {
+              submission: {
+                emailId: "#draft",
+                identityId: selectedIdentity.id,
+                envelope: {
+                  mailFrom: { email: fromEmail },
+                  rcptTo: email.to.map((addr) => ({ email: addr })),
+                },
+              },
+            },
+            onSuccessUpdateEmail: {
+              "#submission": {
+                mailboxIds: sentMailboxIds,
+                keywords: { $seen: true },
+              },
+            },
+          },
+          "submitEmail",
+        ],
+      ],
     };
 
     const response = await this.makeRequest(request);
@@ -333,23 +400,27 @@ export class JmapClient {
     const emailResult = this.getMethodResult(response, 0);
     if (emailResult.notCreated?.draft) {
       const err = emailResult.notCreated.draft;
-      throw new Error(`Failed to create email: ${err.type}${err.description ? ' - ' + err.description : ''}`);
+      throw new Error(
+        `Failed to create email: ${err.type}${err.description ? " - " + err.description : ""}`
+      );
     }
 
     const emailId = emailResult.created?.draft?.id;
     if (!emailId) {
-      throw new Error('Email creation returned no email ID');
+      throw new Error("Email creation returned no email ID");
     }
 
     const submissionResult = this.getMethodResult(response, 1);
     if (submissionResult.notCreated?.submission) {
       const err = submissionResult.notCreated.submission;
-      throw new Error(`Failed to submit email: ${err.type}${err.description ? ' - ' + err.description : ''}`);
+      throw new Error(
+        `Failed to submit email: ${err.type}${err.description ? " - " + err.description : ""}`
+      );
     }
 
     const submissionId = submissionResult.created?.submission?.id;
     if (!submissionId) {
-      throw new Error('Email submission returned no submission ID');
+      throw new Error("Email submission returned no submission ID");
     }
 
     return submissionId;
@@ -372,25 +443,27 @@ export class JmapClient {
 
     // Validate at least one meaningful field is present
     if (!email.to?.length && !email.subject && !email.textBody && !email.htmlBody) {
-      throw new Error('At least one of to, subject, textBody, or htmlBody must be provided');
+      throw new Error("At least one of to, subject, textBody, or htmlBody must be provided");
     }
 
     // Get all identities to resolve from address
     const identities = await this.getIdentities();
     if (!identities || identities.length === 0) {
-      throw new Error('No sending identities found');
+      throw new Error("No sending identities found");
     }
 
     let selectedIdentity;
     if (email.from) {
-      selectedIdentity = identities.find(id =>
-        id.email.toLowerCase() === email.from?.toLowerCase()
+      selectedIdentity = identities.find(
+        (id) => id.email.toLowerCase() === email.from?.toLowerCase()
       );
       if (!selectedIdentity) {
-        throw new Error('From address is not verified for sending. Choose one of your verified identities.');
+        throw new Error(
+          "From address is not verified for sending. Choose one of your verified identities."
+        );
       }
     } else {
-      selectedIdentity = identities.find(id => id.mayDelete === false) || identities[0];
+      selectedIdentity = identities.find((id) => id.mayDelete === false) || identities[0];
     }
 
     const fromEmail = selectedIdentity.email;
@@ -401,9 +474,9 @@ export class JmapClient {
       draftMailboxId = email.mailboxId;
     } else {
       const mailboxes = await this.getMailboxes();
-      const draftsMailbox = this.findMailboxByRoleOrName(mailboxes, 'drafts', 'draft');
+      const draftsMailbox = this.findMailboxByRoleOrName(mailboxes, "drafts", "draft");
       if (!draftsMailbox) {
-        throw new Error('Could not find Drafts mailbox');
+        throw new Error("Could not find Drafts mailbox");
       }
       draftMailboxId = draftsMailbox.id;
     }
@@ -417,30 +490,34 @@ export class JmapClient {
       from: [{ email: fromEmail }],
     };
 
-    if (email.to?.length) emailObject.to = email.to.map(addr => ({ email: addr }));
-    if (email.cc?.length) emailObject.cc = email.cc.map(addr => ({ email: addr }));
-    if (email.bcc?.length) emailObject.bcc = email.bcc.map(addr => ({ email: addr }));
+    if (email.to?.length) emailObject.to = email.to.map((addr) => ({ email: addr }));
+    if (email.cc?.length) emailObject.cc = email.cc.map((addr) => ({ email: addr }));
+    if (email.bcc?.length) emailObject.bcc = email.bcc.map((addr) => ({ email: addr }));
     if (email.subject) emailObject.subject = email.subject;
     if (email.inReplyTo?.length) emailObject.inReplyTo = email.inReplyTo;
     if (email.references?.length) emailObject.references = email.references;
-    if (email.replyTo?.length) emailObject.replyTo = email.replyTo.map(addr => ({ email: addr }));
-    if (email.textBody) emailObject.textBody = [{ partId: 'text', type: 'text/plain' }];
-    if (email.htmlBody) emailObject.htmlBody = [{ partId: 'html', type: 'text/html' }];
+    if (email.replyTo?.length) emailObject.replyTo = email.replyTo.map((addr) => ({ email: addr }));
+    if (email.textBody) emailObject.textBody = [{ partId: "text", type: "text/plain" }];
+    if (email.htmlBody) emailObject.htmlBody = [{ partId: "html", type: "text/html" }];
     if (email.textBody || email.htmlBody) {
       emailObject.bodyValues = {
         ...(email.textBody && { text: { value: email.textBody } }),
-        ...(email.htmlBody && { html: { value: email.htmlBody } })
+        ...(email.htmlBody && { html: { value: email.htmlBody } }),
       };
     }
 
     const request: JmapRequest = {
-      using: ['urn:ietf:params:jmap:core', 'urn:ietf:params:jmap:mail'],
+      using: ["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:mail"],
       methodCalls: [
-        ['Email/set', {
-          accountId: session.accountId,
-          create: { draft: emailObject }
-        }, 'createDraft']
-      ]
+        [
+          "Email/set",
+          {
+            accountId: session.accountId,
+            create: { draft: emailObject },
+          },
+          "createDraft",
+        ],
+      ],
     };
 
     const response = await this.makeRequest(request);
@@ -450,43 +527,65 @@ export class JmapClient {
     // Bug 2: Propagate server-provided error details from notCreated
     if (result.notCreated?.draft) {
       const err = result.notCreated.draft;
-      throw new Error(`Failed to create draft: ${err.type}${err.description ? ' - ' + err.description : ''}`);
+      throw new Error(
+        `Failed to create draft: ${err.type}${err.description ? " - " + err.description : ""}`
+      );
     }
 
     // Bug 3: Throw if created ID is missing instead of returning 'unknown'
     const emailId = result.created?.draft?.id;
     if (!emailId) {
-      throw new Error('Draft creation returned no email ID');
+      throw new Error("Draft creation returned no email ID");
     }
 
     return emailId;
   }
 
-  async updateDraft(emailId: string, updates: {
-    to?: string[];
-    cc?: string[];
-    bcc?: string[];
-    subject?: string;
-    textBody?: string;
-    htmlBody?: string;
-    from?: string;
-    replyTo?: string[];
-  }): Promise<string> {
+  async updateDraft(
+    emailId: string,
+    updates: {
+      to?: string[];
+      cc?: string[];
+      bcc?: string[];
+      subject?: string;
+      textBody?: string;
+      htmlBody?: string;
+      from?: string;
+      replyTo?: string[];
+    }
+  ): Promise<string> {
     const session = await this.getSession();
 
     // Fetch the existing email
     const getRequest: JmapRequest = {
-      using: ['urn:ietf:params:jmap:core', 'urn:ietf:params:jmap:mail'],
+      using: ["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:mail"],
       methodCalls: [
-        ['Email/get', {
-          accountId: session.accountId,
-          ids: [emailId],
-          properties: ['id', 'subject', 'from', 'to', 'cc', 'bcc', 'replyTo', 'textBody', 'htmlBody', 'bodyValues', 'mailboxIds', 'keywords'],
-          bodyProperties: ['partId', 'blobId', 'type', 'size'],
-          fetchTextBodyValues: true,
-          fetchHTMLBodyValues: true,
-        }, 'getEmail']
-      ]
+        [
+          "Email/get",
+          {
+            accountId: session.accountId,
+            ids: [emailId],
+            properties: [
+              "id",
+              "subject",
+              "from",
+              "to",
+              "cc",
+              "bcc",
+              "replyTo",
+              "textBody",
+              "htmlBody",
+              "bodyValues",
+              "mailboxIds",
+              "keywords",
+            ],
+            bodyProperties: ["partId", "blobId", "type", "size"],
+            fetchTextBodyValues: true,
+            fetchHTMLBodyValues: true,
+          },
+          "getEmail",
+        ],
+      ],
     };
 
     const getResponse = await this.makeRequest(getRequest);
@@ -497,32 +596,35 @@ export class JmapClient {
 
     // Verify it's a draft
     if (!existingEmail.keywords?.$draft) {
-      throw new Error('Cannot edit a non-draft email');
+      throw new Error("Cannot edit a non-draft email");
     }
 
     // Resolve identity
     const identities = await this.getIdentities();
     if (!identities || identities.length === 0) {
-      throw new Error('No sending identities found');
+      throw new Error("No sending identities found");
     }
 
     let selectedIdentity;
     if (updates.from) {
-      selectedIdentity = identities.find(id =>
-        id.email.toLowerCase() === updates.from?.toLowerCase()
+      selectedIdentity = identities.find(
+        (id) => id.email.toLowerCase() === updates.from?.toLowerCase()
       );
       if (!selectedIdentity) {
-        throw new Error('From address is not verified for sending. Choose one of your verified identities.');
+        throw new Error(
+          "From address is not verified for sending. Choose one of your verified identities."
+        );
       }
     } else {
       // Use existing from, or fall back to default identity
       const existingFrom = existingEmail.from?.[0]?.email;
       if (existingFrom) {
-        selectedIdentity = identities.find(id =>
-          id.email.toLowerCase() === existingFrom.toLowerCase()
-        ) || identities.find(id => id.mayDelete === false) || identities[0];
+        selectedIdentity =
+          identities.find((id) => id.email.toLowerCase() === existingFrom.toLowerCase()) ||
+          identities.find((id) => id.mayDelete === false) ||
+          identities[0];
       } else {
-        selectedIdentity = identities.find(id => id.mayDelete === false) || identities[0];
+        selectedIdentity = identities.find((id) => id.mayDelete === false) || identities[0];
       }
     }
 
@@ -539,14 +641,29 @@ export class JmapClient {
       : null;
 
     // Merge: updates override existing values
-    const mergedSubject = updates.subject !== undefined ? updates.subject : (existingEmail.subject || '');
-    const mergedTo = updates.to !== undefined ? updates.to.map(addr => ({ email: addr })) : (existingEmail.to || []);
-    const mergedCc = updates.cc !== undefined ? updates.cc.map(addr => ({ email: addr })) : (existingEmail.cc || []);
-    const mergedBcc = updates.bcc !== undefined ? updates.bcc.map(addr => ({ email: addr })) : (existingEmail.bcc || []);
-    const mergedReplyTo = updates.replyTo !== undefined ? updates.replyTo.map(addr => ({ email: addr })) : (existingEmail.replyTo || null);
+    const mergedSubject =
+      updates.subject !== undefined ? updates.subject : existingEmail.subject || "";
+    const mergedTo =
+      updates.to !== undefined
+        ? updates.to.map((addr) => ({ email: addr }))
+        : existingEmail.to || [];
+    const mergedCc =
+      updates.cc !== undefined
+        ? updates.cc.map((addr) => ({ email: addr }))
+        : existingEmail.cc || [];
+    const mergedBcc =
+      updates.bcc !== undefined
+        ? updates.bcc.map((addr) => ({ email: addr }))
+        : existingEmail.bcc || [];
+    const mergedReplyTo =
+      updates.replyTo !== undefined
+        ? updates.replyTo.map((addr) => ({ email: addr }))
+        : existingEmail.replyTo || null;
 
-    const textBodyValue = updates.textBody !== undefined ? updates.textBody : (existingTextBody as any)?.value;
-    const htmlBodyValue = updates.htmlBody !== undefined ? updates.htmlBody : (existingHtmlBody as any)?.value;
+    const textBodyValue =
+      updates.textBody !== undefined ? updates.textBody : (existingTextBody as any)?.value;
+    const htmlBodyValue =
+      updates.htmlBody !== undefined ? updates.htmlBody : (existingHtmlBody as any)?.value;
 
     const emailObject: any = {
       mailboxIds: existingEmail.mailboxIds,
@@ -559,8 +676,8 @@ export class JmapClient {
       ...(mergedReplyTo?.length && { replyTo: mergedReplyTo }),
     };
 
-    if (textBodyValue) emailObject.textBody = [{ partId: 'text', type: 'text/plain' }];
-    if (htmlBodyValue) emailObject.htmlBody = [{ partId: 'html', type: 'text/html' }];
+    if (textBodyValue) emailObject.textBody = [{ partId: "text", type: "text/plain" }];
+    if (htmlBodyValue) emailObject.htmlBody = [{ partId: "html", type: "text/html" }];
     if (textBodyValue || htmlBodyValue) {
       emailObject.bodyValues = {
         ...(textBodyValue && { text: { value: textBodyValue } }),
@@ -570,14 +687,18 @@ export class JmapClient {
 
     // Atomic create + destroy in a single Email/set call
     const request: JmapRequest = {
-      using: ['urn:ietf:params:jmap:core', 'urn:ietf:params:jmap:mail'],
+      using: ["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:mail"],
       methodCalls: [
-        ['Email/set', {
-          accountId: session.accountId,
-          create: { draft: emailObject },
-          destroy: [emailId],
-        }, 'updateDraft']
-      ]
+        [
+          "Email/set",
+          {
+            accountId: session.accountId,
+            create: { draft: emailObject },
+            destroy: [emailId],
+          },
+          "updateDraft",
+        ],
+      ],
     };
 
     const response = await this.makeRequest(request);
@@ -585,12 +706,14 @@ export class JmapClient {
 
     if (result.notCreated?.draft) {
       const err = result.notCreated.draft;
-      throw new Error(`Failed to create updated draft: ${err.type}${err.description ? ' - ' + err.description : ''}`);
+      throw new Error(
+        `Failed to create updated draft: ${err.type}${err.description ? " - " + err.description : ""}`
+      );
     }
 
     const newEmailId = result.created?.draft?.id;
     if (!newEmailId) {
-      throw new Error('Draft update returned no email ID');
+      throw new Error("Draft update returned no email ID");
     }
 
     return newEmailId;
@@ -601,14 +724,18 @@ export class JmapClient {
 
     // Fetch the existing email to verify it's a draft
     const getRequest: JmapRequest = {
-      using: ['urn:ietf:params:jmap:core', 'urn:ietf:params:jmap:mail'],
+      using: ["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:mail"],
       methodCalls: [
-        ['Email/get', {
-          accountId: session.accountId,
-          ids: [emailId],
-          properties: ['id', 'from', 'to', 'cc', 'bcc', 'replyTo', 'keywords'],
-        }, 'getEmail']
-      ]
+        [
+          "Email/get",
+          {
+            accountId: session.accountId,
+            ids: [emailId],
+            properties: ["id", "from", "to", "cc", "bcc", "replyTo", "keywords"],
+          },
+          "getEmail",
+        ],
+      ],
     };
 
     const getResponse = await this.makeRequest(getRequest);
@@ -618,7 +745,7 @@ export class JmapClient {
     }
 
     if (!email.keywords?.$draft) {
-      throw new Error('Cannot send a non-draft email');
+      throw new Error("Cannot send a non-draft email");
     }
 
     // Collect all recipients for the envelope
@@ -629,28 +756,28 @@ export class JmapClient {
     ];
 
     if (allRecipients.length === 0) {
-      throw new Error('Draft has no recipients');
+      throw new Error("Draft has no recipients");
     }
 
     // Determine identity from the email's from field
     const fromEmail = email.from?.[0]?.email;
     if (!fromEmail) {
-      throw new Error('Draft has no from address');
+      throw new Error("Draft has no from address");
     }
 
     const identities = await this.getIdentities();
-    const selectedIdentity = identities.find(id =>
-      id.email.toLowerCase() === fromEmail.toLowerCase()
+    const selectedIdentity = identities.find(
+      (id) => id.email.toLowerCase() === fromEmail.toLowerCase()
     );
     if (!selectedIdentity) {
-      throw new Error('From address on draft does not match any sending identity');
+      throw new Error("From address on draft does not match any sending identity");
     }
 
     // Find the Sent mailbox
     const mailboxes = await this.getMailboxes();
-    const sentMailbox = this.findMailboxByRoleOrName(mailboxes, 'sent', 'sent');
+    const sentMailbox = this.findMailboxByRoleOrName(mailboxes, "sent", "sent");
     if (!sentMailbox) {
-      throw new Error('Could not find Sent mailbox');
+      throw new Error("Could not find Sent mailbox");
     }
 
     const sentMailboxIds: Record<string, boolean> = {};
@@ -658,47 +785,61 @@ export class JmapClient {
 
     // Submit the draft
     const request: JmapRequest = {
-      using: ['urn:ietf:params:jmap:core', 'urn:ietf:params:jmap:mail', 'urn:ietf:params:jmap:submission'],
+      using: [
+        "urn:ietf:params:jmap:core",
+        "urn:ietf:params:jmap:mail",
+        "urn:ietf:params:jmap:submission",
+      ],
       methodCalls: [
-        ['EmailSubmission/set', {
-          accountId: session.accountId,
-          create: {
-            submission: {
-              emailId,
-              identityId: selectedIdentity.id,
-              envelope: {
-                mailFrom: { email: fromEmail },
-                rcptTo: allRecipients.map(addr => ({ email: addr.email })),
-              }
-            }
+        [
+          "EmailSubmission/set",
+          {
+            accountId: session.accountId,
+            create: {
+              submission: {
+                emailId,
+                identityId: selectedIdentity.id,
+                envelope: {
+                  mailFrom: { email: fromEmail },
+                  rcptTo: allRecipients.map((addr) => ({ email: addr.email })),
+                },
+              },
+            },
+            onSuccessUpdateEmail: {
+              "#submission": {
+                mailboxIds: sentMailboxIds,
+                "keywords/$draft": null,
+                "keywords/$seen": true,
+              },
+            },
           },
-          onSuccessUpdateEmail: {
-            '#submission': {
-              mailboxIds: sentMailboxIds,
-              'keywords/$draft': null,
-              'keywords/$seen': true,
-            }
-          }
-        }, 'submitDraft']
-      ]
+          "submitDraft",
+        ],
+      ],
     };
 
     const response = await this.makeRequest(request);
     const submissionResult = this.getMethodResult(response, 0);
     if (submissionResult.notCreated?.submission) {
       const err = submissionResult.notCreated.submission;
-      throw new Error(`Failed to submit draft: ${err.type}${err.description ? ' - ' + err.description : ''}`);
+      throw new Error(
+        `Failed to submit draft: ${err.type}${err.description ? " - " + err.description : ""}`
+      );
     }
 
     const submissionId = submissionResult.created?.submission?.id;
     if (!submissionId) {
-      throw new Error('Draft submission returned no submission ID');
+      throw new Error("Draft submission returned no submission ID");
     }
 
     return submissionId;
   }
 
-  async getRecentEmails(limit: number = 10, mailboxName: string | null = null, ascending: boolean = false): Promise<any[]> {
+  async getRecentEmails(
+    limit = 10,
+    mailboxName: string | null = null,
+    ascending = false
+  ): Promise<any[]> {
     const session = await this.getSession();
 
     // When mailboxName is null or empty, search all mail (no inMailbox filter).
@@ -706,9 +847,10 @@ export class JmapClient {
     let filter: any = {};
     if (mailboxName) {
       const mailboxes = await this.getMailboxes();
-      const targetMailbox = mailboxes.find(mb =>
-        mb.role === mailboxName.toLowerCase() ||
-        mb.name.toLowerCase().includes(mailboxName.toLowerCase())
+      const targetMailbox = mailboxes.find(
+        (mb) =>
+          mb.role === mailboxName.toLowerCase() ||
+          mb.name.toLowerCase().includes(mailboxName.toLowerCase())
       );
       if (!targetMailbox) {
         throw new Error(`Could not find mailbox: ${mailboxName}`);
@@ -717,111 +859,138 @@ export class JmapClient {
     }
 
     const request: JmapRequest = {
-      using: ['urn:ietf:params:jmap:core', 'urn:ietf:params:jmap:mail'],
+      using: ["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:mail"],
       methodCalls: [
-        ['Email/query', {
-          accountId: session.accountId,
-          filter,
-          sort: [{ property: 'receivedAt', isAscending: ascending }],
-          limit: Math.min(limit, 50)
-        }, 'query'],
-        ['Email/get', {
-          accountId: session.accountId,
-          '#ids': { resultOf: 'query', name: 'Email/query', path: '/ids' },
-          properties: ['id', 'subject', 'from', 'to', 'replyTo', 'receivedAt', 'preview', 'hasAttachment', 'keywords', 'header:List-Unsubscribe:asURLs']
-        }, 'emails']
-      ]
+        [
+          "Email/query",
+          {
+            accountId: session.accountId,
+            filter,
+            sort: [{ property: "receivedAt", isAscending: ascending }],
+            limit: Math.min(limit, 50),
+          },
+          "query",
+        ],
+        [
+          "Email/get",
+          {
+            accountId: session.accountId,
+            "#ids": { resultOf: "query", name: "Email/query", path: "/ids" },
+            properties: [
+              "id",
+              "subject",
+              "from",
+              "to",
+              "replyTo",
+              "receivedAt",
+              "preview",
+              "hasAttachment",
+              "keywords",
+              "header:List-Unsubscribe:asURLs",
+            ],
+          },
+          "emails",
+        ],
+      ],
     };
 
     const response = await this.makeRequest(request);
     return this.getListResult(response, 1);
   }
 
-  async markEmailRead(emailId: string, read: boolean = true): Promise<void> {
+  async markEmailRead(emailId: string, read = true): Promise<void> {
     const session = await this.getSession();
 
     const update: Record<string, any> = {};
-    update[emailId] = read
-      ? { 'keywords/$seen': true }
-      : { 'keywords/$seen': null };
+    update[emailId] = read ? { "keywords/$seen": true } : { "keywords/$seen": null };
 
     const request: JmapRequest = {
-      using: ['urn:ietf:params:jmap:core', 'urn:ietf:params:jmap:mail'],
+      using: ["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:mail"],
       methodCalls: [
-        ['Email/set', {
-          accountId: session.accountId,
-          update
-        }, 'updateEmail']
-      ]
+        [
+          "Email/set",
+          {
+            accountId: session.accountId,
+            update,
+          },
+          "updateEmail",
+        ],
+      ],
     };
 
     const response = await this.makeRequest(request);
     const result = this.getMethodResult(response, 0);
-    
+
     if (result.notUpdated && result.notUpdated[emailId]) {
-      throw new Error(`Failed to mark email as ${read ? 'read' : 'unread'}.`);
+      throw new Error(`Failed to mark email as ${read ? "read" : "unread"}.`);
     }
   }
 
-  async pinEmail(emailId: string, pinned: boolean = true): Promise<void> {
+  async pinEmail(emailId: string, pinned = true): Promise<void> {
     const session = await this.getSession();
 
     const update: Record<string, any> = {};
-    update[emailId] = pinned
-      ? { 'keywords/$flagged': true }
-      : { 'keywords/$flagged': null };
+    update[emailId] = pinned ? { "keywords/$flagged": true } : { "keywords/$flagged": null };
 
     const request: JmapRequest = {
-      using: ['urn:ietf:params:jmap:core', 'urn:ietf:params:jmap:mail'],
+      using: ["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:mail"],
       methodCalls: [
-        ['Email/set', {
-          accountId: session.accountId,
-          update
-        }, 'pinEmail']
-      ]
+        [
+          "Email/set",
+          {
+            accountId: session.accountId,
+            update,
+          },
+          "pinEmail",
+        ],
+      ],
     };
 
     const response = await this.makeRequest(request);
     const result = this.getMethodResult(response, 0);
 
     if (result.notUpdated && result.notUpdated[emailId]) {
-      throw new Error(`Failed to ${pinned ? 'pin' : 'unpin'} email.`);
+      throw new Error(`Failed to ${pinned ? "pin" : "unpin"} email.`);
     }
   }
 
   async deleteEmail(emailId: string): Promise<void> {
     const session = await this.getSession();
-    
+
     // Find the trash mailbox
     const mailboxes = await this.getMailboxes();
-    const trashMailbox = this.findMailboxByRoleOrName(mailboxes, 'trash', 'trash');
+    const trashMailbox = this.findMailboxByRoleOrName(mailboxes, "trash", "trash");
 
     if (!trashMailbox) {
-      throw new Error('Could not find Trash mailbox');
+      throw new Error("Could not find Trash mailbox");
     }
 
     const trashMailboxIds: Record<string, boolean> = {};
     trashMailboxIds[trashMailbox.id] = true;
 
     const request: JmapRequest = {
-      using: ['urn:ietf:params:jmap:core', 'urn:ietf:params:jmap:mail'],
+      using: ["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:mail"],
       methodCalls: [
-        ['Email/set', {
-          accountId: session.accountId,
-          update: {
-            [emailId]: {
-              mailboxIds: trashMailboxIds
-            }
-          }
-        }, 'moveToTrash']
-      ]
+        [
+          "Email/set",
+          {
+            accountId: session.accountId,
+            update: {
+              [emailId]: {
+                mailboxIds: trashMailboxIds,
+              },
+            },
+          },
+          "moveToTrash",
+        ],
+      ],
     };
 
     const response = await this.makeRequest(request);
     const result = this.getMethodResult(response, 0);
-    
+
     if (result.notUpdated && result.notUpdated[emailId]) {
-      throw new Error('Failed to delete email.');
+      throw new Error("Failed to delete email.");
     }
   }
 
@@ -830,14 +999,18 @@ export class JmapClient {
 
     // Fetch current mailboxIds to build a proper JMAP patch
     const getRequest: JmapRequest = {
-      using: ['urn:ietf:params:jmap:core', 'urn:ietf:params:jmap:mail'],
+      using: ["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:mail"],
       methodCalls: [
-        ['Email/get', {
-          accountId: session.accountId,
-          ids: [emailId],
-          properties: ['mailboxIds']
-        }, 'getEmail']
-      ]
+        [
+          "Email/get",
+          {
+            accountId: session.accountId,
+            ids: [emailId],
+            properties: ["mailboxIds"],
+          },
+          "getEmail",
+        ],
+      ],
     };
     const getResponse = await this.makeRequest(getRequest);
     const email = this.getListResult(getResponse, 0)[0];
@@ -852,22 +1025,26 @@ export class JmapClient {
     patch[`mailboxIds/${targetMailboxId}`] = true;
 
     const request: JmapRequest = {
-      using: ['urn:ietf:params:jmap:core', 'urn:ietf:params:jmap:mail'],
+      using: ["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:mail"],
       methodCalls: [
-        ['Email/set', {
-          accountId: session.accountId,
-          update: {
-            [emailId]: patch
-          }
-        }, 'moveEmail']
-      ]
+        [
+          "Email/set",
+          {
+            accountId: session.accountId,
+            update: {
+              [emailId]: patch,
+            },
+          },
+          "moveEmail",
+        ],
+      ],
     };
 
     const response = await this.makeRequest(request);
     const result = this.getMethodResult(response, 0);
 
     if (result.notUpdated && result.notUpdated[emailId]) {
-      throw new Error('Failed to move email.');
+      throw new Error("Failed to move email.");
     }
   }
 
@@ -876,27 +1053,31 @@ export class JmapClient {
 
     // Build patch object to add specific mailboxIds
     const patch: Record<string, any> = {};
-    mailboxIds.forEach(mailboxId => {
+    mailboxIds.forEach((mailboxId) => {
       patch[`mailboxIds/${mailboxId}`] = true;
     });
 
     const request: JmapRequest = {
-      using: ['urn:ietf:params:jmap:core', 'urn:ietf:params:jmap:mail'],
+      using: ["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:mail"],
       methodCalls: [
-        ['Email/set', {
-          accountId: session.accountId,
-          update: {
-            [emailId]: patch
-          }
-        }, 'addLabels']
-      ]
+        [
+          "Email/set",
+          {
+            accountId: session.accountId,
+            update: {
+              [emailId]: patch,
+            },
+          },
+          "addLabels",
+        ],
+      ],
     };
 
     const response = await this.makeRequest(request);
     const result = this.getMethodResult(response, 0);
 
     if (result.notUpdated && result.notUpdated[emailId]) {
-      throw new Error('Failed to add labels to email.');
+      throw new Error("Failed to add labels to email.");
     }
   }
 
@@ -905,27 +1086,31 @@ export class JmapClient {
 
     // Build patch object to remove specific mailboxIds
     const patch: Record<string, any> = {};
-    mailboxIds.forEach(mailboxId => {
+    mailboxIds.forEach((mailboxId) => {
       patch[`mailboxIds/${mailboxId}`] = null;
     });
 
     const request: JmapRequest = {
-      using: ['urn:ietf:params:jmap:core', 'urn:ietf:params:jmap:mail'],
+      using: ["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:mail"],
       methodCalls: [
-        ['Email/set', {
-          accountId: session.accountId,
-          update: {
-            [emailId]: patch
-          }
-        }, 'removeLabels']
-      ]
+        [
+          "Email/set",
+          {
+            accountId: session.accountId,
+            update: {
+              [emailId]: patch,
+            },
+          },
+          "removeLabels",
+        ],
+      ],
     };
 
     const response = await this.makeRequest(request);
     const result = this.getMethodResult(response, 0);
 
     if (result.notUpdated && result.notUpdated[emailId]) {
-      throw new Error('Failed to remove labels from email.');
+      throw new Error("Failed to remove labels from email.");
     }
   }
 
@@ -934,30 +1119,34 @@ export class JmapClient {
 
     // Build patch object to add specific mailboxIds
     const patch: Record<string, any> = {};
-    mailboxIds.forEach(mailboxId => {
+    mailboxIds.forEach((mailboxId) => {
       patch[`mailboxIds/${mailboxId}`] = true;
     });
 
     const updates: Record<string, any> = {};
-    emailIds.forEach(id => {
+    emailIds.forEach((id) => {
       updates[id] = patch;
     });
 
     const request: JmapRequest = {
-      using: ['urn:ietf:params:jmap:core', 'urn:ietf:params:jmap:mail'],
+      using: ["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:mail"],
       methodCalls: [
-        ['Email/set', {
-          accountId: session.accountId,
-          update: updates
-        }, 'bulkAddLabels']
-      ]
+        [
+          "Email/set",
+          {
+            accountId: session.accountId,
+            update: updates,
+          },
+          "bulkAddLabels",
+        ],
+      ],
     };
 
     const response = await this.makeRequest(request);
     const result = this.getMethodResult(response, 0);
 
     if (result.notUpdated && Object.keys(result.notUpdated).length > 0) {
-      throw new Error('Failed to add labels to some emails.');
+      throw new Error("Failed to add labels to some emails.");
     }
   }
 
@@ -966,30 +1155,34 @@ export class JmapClient {
 
     // Build patch object to remove specific mailboxIds
     const patch: Record<string, any> = {};
-    mailboxIds.forEach(mailboxId => {
+    mailboxIds.forEach((mailboxId) => {
       patch[`mailboxIds/${mailboxId}`] = null;
     });
 
     const updates: Record<string, any> = {};
-    emailIds.forEach(id => {
+    emailIds.forEach((id) => {
       updates[id] = patch;
     });
 
     const request: JmapRequest = {
-      using: ['urn:ietf:params:jmap:core', 'urn:ietf:params:jmap:mail'],
+      using: ["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:mail"],
       methodCalls: [
-        ['Email/set', {
-          accountId: session.accountId,
-          update: updates
-        }, 'bulkRemoveLabels']
-      ]
+        [
+          "Email/set",
+          {
+            accountId: session.accountId,
+            update: updates,
+          },
+          "bulkRemoveLabels",
+        ],
+      ],
     };
 
     const response = await this.makeRequest(request);
     const result = this.getMethodResult(response, 0);
 
     if (result.notUpdated && Object.keys(result.notUpdated).length > 0) {
-      throw new Error('Failed to remove labels from some emails.');
+      throw new Error("Failed to remove labels from some emails.");
     }
   }
 
@@ -997,14 +1190,18 @@ export class JmapClient {
     const session = await this.getSession();
 
     const request: JmapRequest = {
-      using: ['urn:ietf:params:jmap:core', 'urn:ietf:params:jmap:mail'],
+      using: ["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:mail"],
       methodCalls: [
-        ['Email/get', {
-          accountId: session.accountId,
-          ids: [emailId],
-          properties: ['attachments']
-        }, 'getAttachments']
-      ]
+        [
+          "Email/get",
+          {
+            accountId: session.accountId,
+            ids: [emailId],
+            properties: ["attachments"],
+          },
+          "getAttachments",
+        ],
+      ],
     };
 
     const response = await this.makeRequest(request);
@@ -1017,83 +1214,91 @@ export class JmapClient {
 
     // Get the email with full attachment details
     const request: JmapRequest = {
-      using: ['urn:ietf:params:jmap:core', 'urn:ietf:params:jmap:mail'],
+      using: ["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:mail"],
       methodCalls: [
-        ['Email/get', {
-          accountId: session.accountId,
-          ids: [emailId],
-          properties: ['attachments', 'bodyValues'],
-          bodyProperties: ['partId', 'blobId', 'size', 'name', 'type']
-        }, 'getEmail']
-      ]
+        [
+          "Email/get",
+          {
+            accountId: session.accountId,
+            ids: [emailId],
+            properties: ["attachments", "bodyValues"],
+            bodyProperties: ["partId", "blobId", "size", "name", "type"],
+          },
+          "getEmail",
+        ],
+      ],
     };
 
     const response = await this.makeRequest(request);
     const email = this.getListResult(response, 0)[0];
 
     if (!email) {
-      throw new Error('Email not found');
+      throw new Error("Email not found");
     }
 
     // Find attachment by partId or by index
-    let attachment = email.attachments?.find((att: any) => 
-      att.partId === attachmentId || att.blobId === attachmentId
+    let attachment = email.attachments?.find(
+      (att: any) => att.partId === attachmentId || att.blobId === attachmentId
     );
 
     // If not found, try by array index
     if (!attachment) {
-      const index = parseInt(attachmentId, 10);
+      const index = Number.parseInt(attachmentId, 10);
       if (!isNaN(index)) {
         attachment = email.attachments?.[index];
       }
     }
-    
+
     if (!attachment) {
-      throw new Error('Attachment not found.');
+      throw new Error("Attachment not found.");
     }
 
     // Get the download URL from session
     const downloadUrl = session.downloadUrl;
     if (!downloadUrl) {
-      throw new Error('Download capability not available in session');
+      throw new Error("Download capability not available in session");
     }
 
     // Build download URL
     const url = downloadUrl
-      .replace('{accountId}', session.accountId)
-      .replace('{blobId}', attachment.blobId)
-      .replace('{type}', encodeURIComponent(attachment.type || 'application/octet-stream'))
-      .replace('{name}', encodeURIComponent(attachment.name || 'attachment'));
+      .replace("{accountId}", session.accountId)
+      .replace("{blobId}", attachment.blobId)
+      .replace("{type}", encodeURIComponent(attachment.type || "application/octet-stream"))
+      .replace("{name}", encodeURIComponent(attachment.name || "attachment"));
 
     return url;
   }
 
-  static readonly DEFAULT_DOWNLOADS_DIR = resolve(homedir(), 'Downloads', 'fastmail-mcp');
+  static readonly DEFAULT_DOWNLOADS_DIR = resolve(homedir(), "Downloads", "fastmail-mcp");
 
   static validateSavePath(savePath: string, downloadDir?: string): string {
-    const allowedDir = downloadDir ? resolve(normalize(downloadDir)) : JmapClient.DEFAULT_DOWNLOADS_DIR;
+    const allowedDir = downloadDir
+      ? resolve(normalize(downloadDir))
+      : JmapClient.DEFAULT_DOWNLOADS_DIR;
     const resolved = resolve(normalize(savePath));
 
-    if (resolved.includes('\0')) {
-      throw new Error('Save path contains null bytes');
+    if (resolved.includes("\0")) {
+      throw new Error("Save path contains null bytes");
     }
 
-    if (!resolved.startsWith(allowedDir + '/') && resolved !== allowedDir) {
-      throw new Error(
-        `Save path must be within ${allowedDir}. ` +
-        `Received: ${savePath}`
-      );
+    if (!resolved.startsWith(allowedDir + "/") && resolved !== allowedDir) {
+      throw new Error(`Save path must be within ${allowedDir}. ` + `Received: ${savePath}`);
     }
 
     return resolved;
   }
 
-  async downloadAttachmentToFile(emailId: string, attachmentId: string, savePath: string, downloadDir?: string): Promise<{ url: string; bytesWritten: number }> {
+  async downloadAttachmentToFile(
+    emailId: string,
+    attachmentId: string,
+    savePath: string,
+    downloadDir?: string
+  ): Promise<{ url: string; bytesWritten: number }> {
     const validatedPath = JmapClient.validateSavePath(savePath, downloadDir);
     const url = await this.downloadAttachment(emailId, attachmentId);
 
     const response = await fetch(url, {
-      headers: { 'Authorization': this.auth.getAuthHeaders()['Authorization'] }
+      headers: { Authorization: this.auth.getAuthHeaders()["Authorization"] },
     });
 
     if (!response.ok) {
@@ -1123,19 +1328,19 @@ export class JmapClient {
     ascending?: boolean;
   }): Promise<any[]> {
     const session = await this.getSession();
-    
+
     // Build JMAP filter object
     const filter: any = {};
-    
+
     if (filters.query) filter.text = filters.query;
     if (filters.from) filter.from = filters.from;
     if (filters.to) filter.to = filters.to;
     if (filters.subject) filter.subject = filters.subject;
     if (filters.hasAttachment !== undefined) filter.hasAttachment = filters.hasAttachment;
-    if (filters.isUnread === true) filter.notKeyword = '$seen';
-    else if (filters.isUnread === false) filter.hasKeyword = '$seen';
-    if (filters.isPinned === true) filter.hasKeyword = '$flagged';
-    if (filters.isPinned === false) filter.notKeyword = '$flagged';
+    if (filters.isUnread === true) filter.notKeyword = "$seen";
+    else if (filters.isUnread === false) filter.hasKeyword = "$seen";
+    if (filters.isPinned === true) filter.hasKeyword = "$flagged";
+    if (filters.isPinned === false) filter.notKeyword = "$flagged";
     if (filters.mailboxId) filter.inMailbox = filters.mailboxId;
     if (filters.after) filter.after = filters.after;
     if (filters.before) filter.before = filters.before;
@@ -1147,62 +1352,101 @@ export class JmapClient {
       delete filter.hasKeyword;
       delete filter.notKeyword;
       const conditions: any[] = [filter];
-      conditions.push(filters.isUnread ? { notKeyword: '$seen' } : { hasKeyword: '$seen' });
-      conditions.push(filters.isPinned ? { hasKeyword: '$flagged' } : { notKeyword: '$flagged' });
-      finalFilter = { operator: 'AND', conditions };
+      conditions.push(filters.isUnread ? { notKeyword: "$seen" } : { hasKeyword: "$seen" });
+      conditions.push(filters.isPinned ? { hasKeyword: "$flagged" } : { notKeyword: "$flagged" });
+      finalFilter = { operator: "AND", conditions };
     }
 
     const request: JmapRequest = {
-      using: ['urn:ietf:params:jmap:core', 'urn:ietf:params:jmap:mail'],
+      using: ["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:mail"],
       methodCalls: [
-        ['Email/query', {
-          accountId: session.accountId,
-          filter: finalFilter,
-          sort: [{ property: 'receivedAt', isAscending: filters.ascending ?? false }],
-          limit: Math.min(filters.limit || 50, 100)
-        }, 'query'],
-        ['Email/get', {
-          accountId: session.accountId,
-          '#ids': { resultOf: 'query', name: 'Email/query', path: '/ids' },
-          properties: ['id', 'subject', 'from', 'to', 'cc', 'replyTo', 'receivedAt', 'preview', 'hasAttachment', 'keywords', 'threadId']
-        }, 'emails']
-      ]
+        [
+          "Email/query",
+          {
+            accountId: session.accountId,
+            filter: finalFilter,
+            sort: [{ property: "receivedAt", isAscending: filters.ascending ?? false }],
+            limit: Math.min(filters.limit || 50, 100),
+          },
+          "query",
+        ],
+        [
+          "Email/get",
+          {
+            accountId: session.accountId,
+            "#ids": { resultOf: "query", name: "Email/query", path: "/ids" },
+            properties: [
+              "id",
+              "subject",
+              "from",
+              "to",
+              "cc",
+              "replyTo",
+              "receivedAt",
+              "preview",
+              "hasAttachment",
+              "keywords",
+              "threadId",
+            ],
+          },
+          "emails",
+        ],
+      ],
     };
 
     const response = await this.makeRequest(request);
     return this.getListResult(response, 1);
   }
 
-  async searchEmails(query: string, limit: number = 20, ascending: boolean = false): Promise<any[]> {
+  async searchEmails(query: string, limit = 20, ascending = false): Promise<any[]> {
     const session = await this.getSession();
 
     // When the query looks like a sender address (contains @), Fastmail JMAP does not
     // match mid-address substrings starting after a dot in the local part via the
     // generic `text` filter. Using the domain portion as an explicit `from` filter via
     // OR is reliably matched. Verified against the live Fastmail JMAP API.
-    const filter = query.includes('@')
+    const filter = query.includes("@")
       ? (() => {
-          const atToken = query.split(/\s+/).find(t => t.includes('@')) || query;
-          const fromDomain = atToken.includes('@') ? atToken.split('@').slice(1).join('@') : atToken;
-          return { operator: 'OR', conditions: [{ text: query }, { from: fromDomain }] };
+          const atToken = query.split(/\s+/).find((t) => t.includes("@")) || query;
+          const fromDomain = atToken.includes("@")
+            ? atToken.split("@").slice(1).join("@")
+            : atToken;
+          return { operator: "OR", conditions: [{ text: query }, { from: fromDomain }] };
         })()
       : { text: query };
 
     const request: JmapRequest = {
-      using: ['urn:ietf:params:jmap:core', 'urn:ietf:params:jmap:mail'],
+      using: ["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:mail"],
       methodCalls: [
-        ['Email/query', {
-          accountId: session.accountId,
-          filter,
-          sort: [{ property: 'receivedAt', isAscending: ascending }],
-          limit
-        }, 'query'],
-        ['Email/get', {
-          accountId: session.accountId,
-          '#ids': { resultOf: 'query', name: 'Email/query', path: '/ids' },
-          properties: ['id', 'subject', 'from', 'to', 'replyTo', 'receivedAt', 'preview', 'hasAttachment']
-        }, 'emails']
-      ]
+        [
+          "Email/query",
+          {
+            accountId: session.accountId,
+            filter,
+            sort: [{ property: "receivedAt", isAscending: ascending }],
+            limit,
+          },
+          "query",
+        ],
+        [
+          "Email/get",
+          {
+            accountId: session.accountId,
+            "#ids": { resultOf: "query", name: "Email/query", path: "/ids" },
+            properties: [
+              "id",
+              "subject",
+              "from",
+              "to",
+              "replyTo",
+              "receivedAt",
+              "preview",
+              "hasAttachment",
+            ],
+          },
+          "emails",
+        ],
+      ],
     };
 
     const response = await this.makeRequest(request);
@@ -1214,20 +1458,24 @@ export class JmapClient {
 
     // First, check if threadId is actually an email ID and resolve the thread
     let actualThreadId = threadId;
-    
+
     // Try to get the email first to see if we need to resolve thread ID
     try {
       const emailRequest: JmapRequest = {
-        using: ['urn:ietf:params:jmap:core', 'urn:ietf:params:jmap:mail'],
+        using: ["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:mail"],
         methodCalls: [
-          ['Email/get', {
-            accountId: session.accountId,
-            ids: [threadId],
-            properties: ['threadId']
-          }, 'checkEmail']
-        ]
+          [
+            "Email/get",
+            {
+              accountId: session.accountId,
+              ids: [threadId],
+              properties: ["threadId"],
+            },
+            "checkEmail",
+          ],
+        ],
       };
-      
+
       const emailResponse = await this.makeRequest(emailRequest);
       const email = this.getListResult(emailResponse, 0)[0];
 
@@ -1240,18 +1488,38 @@ export class JmapClient {
 
     // Use Thread/get with the resolved thread ID
     const request: JmapRequest = {
-      using: ['urn:ietf:params:jmap:core', 'urn:ietf:params:jmap:mail'],
+      using: ["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:mail"],
       methodCalls: [
-        ['Thread/get', {
-          accountId: session.accountId,
-          ids: [actualThreadId]
-        }, 'getThread'],
-        ['Email/get', {
-          accountId: session.accountId,
-          '#ids': { resultOf: 'getThread', name: 'Thread/get', path: '/list/*/emailIds' },
-          properties: ['id', 'subject', 'from', 'to', 'cc', 'replyTo', 'receivedAt', 'preview', 'hasAttachment', 'keywords', 'threadId']
-        }, 'emails']
-      ]
+        [
+          "Thread/get",
+          {
+            accountId: session.accountId,
+            ids: [actualThreadId],
+          },
+          "getThread",
+        ],
+        [
+          "Email/get",
+          {
+            accountId: session.accountId,
+            "#ids": { resultOf: "getThread", name: "Thread/get", path: "/list/*/emailIds" },
+            properties: [
+              "id",
+              "subject",
+              "from",
+              "to",
+              "cc",
+              "replyTo",
+              "receivedAt",
+              "preview",
+              "hasAttachment",
+              "keywords",
+              "threadId",
+            ],
+          },
+          "emails",
+        ],
+      ],
     };
 
     const response = await this.makeRequest(request);
@@ -1267,18 +1535,30 @@ export class JmapClient {
 
   async getMailboxStats(mailboxId?: string): Promise<any> {
     const session = await this.getSession();
-    
+
     if (mailboxId) {
       // Get stats for specific mailbox
       const request: JmapRequest = {
-        using: ['urn:ietf:params:jmap:core', 'urn:ietf:params:jmap:mail'],
+        using: ["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:mail"],
         methodCalls: [
-          ['Mailbox/get', {
-            accountId: session.accountId,
-            ids: [mailboxId],
-            properties: ['id', 'name', 'role', 'totalEmails', 'unreadEmails', 'totalThreads', 'unreadThreads']
-          }, 'mailbox']
-        ]
+          [
+            "Mailbox/get",
+            {
+              accountId: session.accountId,
+              ids: [mailboxId],
+              properties: [
+                "id",
+                "name",
+                "role",
+                "totalEmails",
+                "unreadEmails",
+                "totalThreads",
+                "unreadThreads",
+              ],
+            },
+            "mailbox",
+          ],
+        ],
       };
 
       const response = await this.makeRequest(request);
@@ -1286,14 +1566,14 @@ export class JmapClient {
     } else {
       // Get stats for all mailboxes
       const mailboxes = await this.getMailboxes();
-      return mailboxes.map(mb => ({
+      return mailboxes.map((mb) => ({
         id: mb.id,
         name: mb.name,
         role: mb.role,
         totalEmails: mb.totalEmails || 0,
         unreadEmails: mb.unreadEmails || 0,
         totalThreads: mb.totalThreads || 0,
-        unreadThreads: mb.unreadThreads || 0
+        unreadThreads: mb.unreadThreads || 0,
       }));
     }
   }
@@ -1304,81 +1584,88 @@ export class JmapClient {
     const identities = await this.getIdentities();
 
     // Calculate totals
-    const totals = mailboxes.reduce((acc, mb) => ({
-      totalEmails: acc.totalEmails + (mb.totalEmails || 0),
-      unreadEmails: acc.unreadEmails + (mb.unreadEmails || 0),
-      totalThreads: acc.totalThreads + (mb.totalThreads || 0),
-      unreadThreads: acc.unreadThreads + (mb.unreadThreads || 0)
-    }), { totalEmails: 0, unreadEmails: 0, totalThreads: 0, unreadThreads: 0 });
+    const totals = mailboxes.reduce(
+      (acc, mb) => ({
+        totalEmails: acc.totalEmails + (mb.totalEmails || 0),
+        unreadEmails: acc.unreadEmails + (mb.unreadEmails || 0),
+        totalThreads: acc.totalThreads + (mb.totalThreads || 0),
+        unreadThreads: acc.unreadThreads + (mb.unreadThreads || 0),
+      }),
+      { totalEmails: 0, unreadEmails: 0, totalThreads: 0, unreadThreads: 0 }
+    );
 
     return {
       accountId: session.accountId,
       mailboxCount: mailboxes.length,
       identityCount: identities.length,
       ...totals,
-      mailboxes: mailboxes.map(mb => ({
+      mailboxes: mailboxes.map((mb) => ({
         id: mb.id,
         name: mb.name,
         role: mb.role,
         totalEmails: mb.totalEmails || 0,
-        unreadEmails: mb.unreadEmails || 0
-      }))
+        unreadEmails: mb.unreadEmails || 0,
+      })),
     };
   }
 
-  async bulkMarkRead(emailIds: string[], read: boolean = true): Promise<void> {
+  async bulkMarkRead(emailIds: string[], read = true): Promise<void> {
     const session = await this.getSession();
 
     const updates: Record<string, any> = {};
-    emailIds.forEach(id => {
-      updates[id] = read
-        ? { 'keywords/$seen': true }
-        : { 'keywords/$seen': null };
+    emailIds.forEach((id) => {
+      updates[id] = read ? { "keywords/$seen": true } : { "keywords/$seen": null };
     });
 
     const request: JmapRequest = {
-      using: ['urn:ietf:params:jmap:core', 'urn:ietf:params:jmap:mail'],
+      using: ["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:mail"],
       methodCalls: [
-        ['Email/set', {
-          accountId: session.accountId,
-          update: updates
-        }, 'bulkUpdate']
-      ]
+        [
+          "Email/set",
+          {
+            accountId: session.accountId,
+            update: updates,
+          },
+          "bulkUpdate",
+        ],
+      ],
     };
 
     const response = await this.makeRequest(request);
     const result = this.getMethodResult(response, 0);
-    
+
     if (result.notUpdated && Object.keys(result.notUpdated).length > 0) {
-      throw new Error('Failed to update some emails.');
+      throw new Error("Failed to update some emails.");
     }
   }
 
-  async bulkPinEmails(emailIds: string[], pinned: boolean = true): Promise<void> {
+  async bulkPinEmails(emailIds: string[], pinned = true): Promise<void> {
     const session = await this.getSession();
 
     const updates: Record<string, any> = {};
-    emailIds.forEach(id => {
-      updates[id] = pinned
-        ? { 'keywords/$flagged': true }
-        : { 'keywords/$flagged': null };
+    emailIds.forEach((id) => {
+      updates[id] = pinned ? { "keywords/$flagged": true } : { "keywords/$flagged": null };
     });
 
     const request: JmapRequest = {
-      using: ['urn:ietf:params:jmap:core', 'urn:ietf:params:jmap:mail'],
+      using: ["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:mail"],
       methodCalls: [
-        ['Email/set', {
-          accountId: session.accountId,
-          update: updates
-        }, 'bulkFlag']
-      ]
+        [
+          "Email/set",
+          {
+            accountId: session.accountId,
+            update: updates,
+          },
+          "bulkFlag",
+        ],
+      ],
     };
 
     const response = await this.makeRequest(request);
     const result = this.getMethodResult(response, 0);
 
     if (result.notUpdated && Object.keys(result.notUpdated).length > 0) {
-      throw new Error('Failed to pin/unpin some emails.');
+      throw new Error("Failed to pin/unpin some emails.");
     }
   }
 
@@ -1387,23 +1674,29 @@ export class JmapClient {
 
     // Fetch current mailboxIds for all emails to build proper JMAP patches
     const getRequest: JmapRequest = {
-      using: ['urn:ietf:params:jmap:core', 'urn:ietf:params:jmap:mail'],
+      using: ["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:mail"],
       methodCalls: [
-        ['Email/get', {
-          accountId: session.accountId,
-          ids: emailIds,
-          properties: ['id', 'mailboxIds']
-        }, 'getEmails']
-      ]
+        [
+          "Email/get",
+          {
+            accountId: session.accountId,
+            ids: emailIds,
+            properties: ["id", "mailboxIds"],
+          },
+          "getEmails",
+        ],
+      ],
     };
     const getResponse = await this.makeRequest(getRequest);
     const emails: any[] = this.getListResult(getResponse, 0);
     const mailboxMap: Record<string, Record<string, boolean>> = {};
-    emails.forEach((e: any) => { mailboxMap[e.id] = e.mailboxIds || {}; });
+    emails.forEach((e: any) => {
+      mailboxMap[e.id] = e.mailboxIds || {};
+    });
 
     // Build patch per email: remove all current mailboxes, add target
     const updates: Record<string, any> = {};
-    emailIds.forEach(id => {
+    emailIds.forEach((id) => {
       const patch: Record<string, boolean | null> = {};
       for (const mbId of Object.keys(mailboxMap[id] || {})) {
         patch[`mailboxIds/${mbId}`] = null;
@@ -1413,20 +1706,24 @@ export class JmapClient {
     });
 
     const request: JmapRequest = {
-      using: ['urn:ietf:params:jmap:core', 'urn:ietf:params:jmap:mail'],
+      using: ["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:mail"],
       methodCalls: [
-        ['Email/set', {
-          accountId: session.accountId,
-          update: updates
-        }, 'bulkMove']
-      ]
+        [
+          "Email/set",
+          {
+            accountId: session.accountId,
+            update: updates,
+          },
+          "bulkMove",
+        ],
+      ],
     };
 
     const response = await this.makeRequest(request);
     const result = this.getMethodResult(response, 0);
 
     if (result.notUpdated && Object.keys(result.notUpdated).length > 0) {
-      throw new Error('Failed to move some emails.');
+      throw new Error("Failed to move some emails.");
     }
   }
 
@@ -1435,35 +1732,39 @@ export class JmapClient {
 
     // Find the trash mailbox
     const mailboxes = await this.getMailboxes();
-    const trashMailbox = this.findMailboxByRoleOrName(mailboxes, 'trash', 'trash');
+    const trashMailbox = this.findMailboxByRoleOrName(mailboxes, "trash", "trash");
 
     if (!trashMailbox) {
-      throw new Error('Could not find Trash mailbox');
+      throw new Error("Could not find Trash mailbox");
     }
 
     const trashMailboxIds: Record<string, boolean> = {};
     trashMailboxIds[trashMailbox.id] = true;
 
     const updates: Record<string, any> = {};
-    emailIds.forEach(id => {
+    emailIds.forEach((id) => {
       updates[id] = { mailboxIds: trashMailboxIds };
     });
 
     const request: JmapRequest = {
-      using: ['urn:ietf:params:jmap:core', 'urn:ietf:params:jmap:mail'],
+      using: ["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:mail"],
       methodCalls: [
-        ['Email/set', {
-          accountId: session.accountId,
-          update: updates
-        }, 'bulkDelete']
-      ]
+        [
+          "Email/set",
+          {
+            accountId: session.accountId,
+            update: updates,
+          },
+          "bulkDelete",
+        ],
+      ],
     };
 
     const response = await this.makeRequest(request);
     const result = this.getMethodResult(response, 0);
 
     if (result.notUpdated && Object.keys(result.notUpdated).length > 0) {
-      throw new Error('Failed to delete some emails.');
+      throw new Error("Failed to delete some emails.");
     }
   }
 }

@@ -4,14 +4,14 @@ export interface FastmailConfig {
 }
 
 function normalizeBaseUrl(input?: string): string {
-  const DEFAULT = 'https://api.fastmail.com';
+  const DEFAULT = "https://api.fastmail.com";
   if (!input) return DEFAULT;
   let url = input.trim();
   if (!url) return DEFAULT;
   if (!/^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(url)) {
-    url = 'https://' + url;
+    url = "https://" + url;
   }
-  url = url.replace(/\/+$/, '');
+  url = url.replace(/\/+$/, "");
   return url;
 }
 
@@ -26,8 +26,8 @@ export class FastmailAuth {
 
   getAuthHeaders(): Record<string, string> {
     return {
-      'Authorization': `Bearer ${this.apiToken}`,
-      'Content-Type': 'application/json'
+      Authorization: `Bearer ${this.apiToken}`,
+      "Content-Type": "application/json",
     };
   }
 
