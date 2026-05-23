@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
+import { homedir } from "node:os";
+import { resolve } from "node:path";
 import { beforeEach, describe, it, mock } from "node:test";
-import { homedir } from "os";
-import { resolve } from "path";
 import { FastmailAuth } from "./auth.js";
 import { JmapClient } from "./jmap-client.js";
 

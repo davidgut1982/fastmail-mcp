@@ -42,7 +42,7 @@ function findEnvValue(keys: string[]): { value?: string; key?: string; wasPlaceh
   return { value: undefined, key: undefined, wasPlaceholder: false };
 }
 
-function maskSecret(value: string): string {
+function _maskSecret(value: string): string {
   if (value.length <= 6) return "***";
   return `${value.slice(0, 4)}…${value.slice(-2)} (len ${value.length})`;
 }

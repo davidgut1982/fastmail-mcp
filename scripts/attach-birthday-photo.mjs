@@ -5,7 +5,7 @@
  * Test: Run and assert HTTP 204 (or 200/201) from the PUT response.
  */
 
-import { readFileSync } from "fs";
+import { readFileSync } from "node:fs";
 
 const BASE_URL = "https://caldav.fastmail.com/dav/calendars/user/davidgutowsky@fastmail.com";
 const CALENDAR_ID = "4c646201-472c-4377-b4c8-10f4455c6ecf";

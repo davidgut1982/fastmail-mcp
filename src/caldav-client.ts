@@ -354,7 +354,7 @@ export class CalDAVCalendarClient {
       updatedIcs = updatedIcs.replace(/^ATTACH[^\r\n]*(\r?\n[ \t][^\r\n]*)*/gm, "");
       updatedIcs = updatedIcs.replace(/(\r?\n){2,}/g, "\r\n");
       // Add new ATTACH lines before END:VEVENT
-      const fs = await import("fs");
+      const fs = await import("node:fs");
       const attachLines = updates.attachments
         .map((filePath) => {
           const ext = filePath.split(".").pop()?.toLowerCase() ?? "bin";

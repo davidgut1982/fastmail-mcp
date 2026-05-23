@@ -67,7 +67,7 @@ export class ContactsCalendarClient extends JmapClient {
       try {
         const fallbackResponse = await this.makeRequest(fallbackRequest);
         return this.getListResult(fallbackResponse, 0);
-      } catch (fallbackError) {
+      } catch (_fallbackError) {
         throw new Error(
           `Contacts not supported or accessible: ${error instanceof Error ? error.message : String(error)}. Try checking account permissions or enabling contacts API access in Fastmail settings.`
         );

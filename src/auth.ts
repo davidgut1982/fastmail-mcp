@@ -9,7 +9,7 @@ function normalizeBaseUrl(input?: string): string {
   let url = input.trim();
   if (!url) return DEFAULT;
   if (!/^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(url)) {
-    url = "https://" + url;
+    url = `https://${url}`;
   }
   url = url.replace(/\/+$/, "");
   return url;

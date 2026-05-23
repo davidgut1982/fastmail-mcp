@@ -41,7 +41,7 @@ A Model Context Protocol (MCP) server that provides access to the Fastmail API, 
 ## Setup
 
 ### Prerequisites
-- Node.js 18+ 
+- Node.js 18+
 - A Fastmail account with API access
 - Fastmail API token
 
@@ -135,7 +135,7 @@ You can install this server as a Desktop Extension for Claude Desktop using the 
 ## Available Tools (38 Total)
 
 **🎯 Most Popular Tools:**
-- **check_function_availability**: Check what's available and get setup guidance  
+- **check_function_availability**: Check what's available and get setup guidance
 - **test_bulk_operations**: Safely test bulk operations with dry-run mode
 - **send_email**: Full-featured email sending with proper draft/sent handling
 - **advanced_search**: Powerful multi-criteria email filtering
@@ -333,7 +333,7 @@ Contributions are welcome! Please ensure that:
 ### Common Issues
 
 1. **Authentication Errors**: Ensure your API token is valid and has the necessary permissions
-2. **Missing Dependencies**: Run `npm install` to ensure all dependencies are installed  
+2. **Missing Dependencies**: Run `npm install` to ensure all dependencies are installed
 3. **Build Errors**: Check that TypeScript compilation completes without errors using `npm run build`
 4. **Calendar/Contacts "Forbidden" Errors**: Use `check_function_availability` to see setup guidance
 

@@ -1,6 +1,6 @@
-import { homedir } from "os";
-import { dirname, normalize, resolve } from "path";
-import { mkdir, writeFile } from "fs/promises";
+import { mkdir, writeFile } from "node:fs/promises";
+import { homedir } from "node:os";
+import { dirname, normalize, resolve } from "node:path";
 import type { FastmailAuth } from "./auth.js";
 
 export interface JmapSession {
@@ -45,7 +45,7 @@ export class JmapClient {
     const [tag, result] = entry;
     if (tag === "error") {
       throw new Error(
-        `JMAP error: ${result.type}${result.description ? " - " + result.description : ""}`
+        `JMAP error: ${result.type}${result.description ? ` - ${result.description}` : ""}`
       );
     }
     return result;
@@ -93,7 +93,7 @@ export class JmapClient {
     try {
       const identity = await this.getDefaultIdentity();
       return identity?.email || "user@example.com";
-    } catch (error) {
+    } catch (_error) {
       // Fallback if Identity/get is not available
       return "user@example.com";
     }
@@ -230,7 +230,7 @@ export class JmapClient {
     const response = await this.makeRequest(request);
     const result = this.getMethodResult(response, 0);
 
-    if (result.notFound && result.notFound.includes(id)) {
+    if (result.notFound?.includes(id)) {
       throw new Error(`Email with ID '${id}' not found`);
     }
 
@@ -291,7 +291,7 @@ export class JmapClient {
     }
 
     // Determine which identity to use
-    let selectedIdentity;
+    let selectedIdentity: any;
     if (email.from) {
       // Validate that the from address matches an available identity
       selectedIdentity = identities.find(
@@ -401,7 +401,7 @@ export class JmapClient {
     if (emailResult.notCreated?.draft) {
       const err = emailResult.notCreated.draft;
       throw new Error(
-        `Failed to create email: ${err.type}${err.description ? " - " + err.description : ""}`
+        `Failed to create email: ${err.type}${err.description ? ` - ${err.description}` : ""}`
       );
     }
 
@@ -414,7 +414,7 @@ export class JmapClient {
     if (submissionResult.notCreated?.submission) {
       const err = submissionResult.notCreated.submission;
       throw new Error(
-        `Failed to submit email: ${err.type}${err.description ? " - " + err.description : ""}`
+        `Failed to submit email: ${err.type}${err.description ? ` - ${err.description}` : ""}`
       );
     }
 
@@ -452,7 +452,7 @@ export class JmapClient {
       throw new Error("No sending identities found");
     }
 
-    let selectedIdentity;
+    let selectedIdentity: any;
     if (email.from) {
       selectedIdentity = identities.find(
         (id) => id.email.toLowerCase() === email.from?.toLowerCase()
@@ -528,7 +528,7 @@ export class JmapClient {
     if (result.notCreated?.draft) {
       const err = result.notCreated.draft;
       throw new Error(
-        `Failed to create draft: ${err.type}${err.description ? " - " + err.description : ""}`
+        `Failed to create draft: ${err.type}${err.description ? ` - ${err.description}` : ""}`
       );
     }
 
@@ -605,7 +605,7 @@ export class JmapClient {
       throw new Error("No sending identities found");
     }
 
-    let selectedIdentity;
+    let selectedIdentity: any;
     if (updates.from) {
       selectedIdentity = identities.find(
         (id) => id.email.toLowerCase() === updates.from?.toLowerCase()
@@ -707,7 +707,7 @@ export class JmapClient {
     if (result.notCreated?.draft) {
       const err = result.notCreated.draft;
       throw new Error(
-        `Failed to create updated draft: ${err.type}${err.description ? " - " + err.description : ""}`
+        `Failed to create updated draft: ${err.type}${err.description ? ` - ${err.description}` : ""}`
       );
     }
 
@@ -823,7 +823,7 @@ export class JmapClient {
     if (submissionResult.notCreated?.submission) {
       const err = submissionResult.notCreated.submission;
       throw new Error(
-        `Failed to submit draft: ${err.type}${err.description ? " - " + err.description : ""}`
+        `Failed to submit draft: ${err.type}${err.description ? ` - ${err.description}` : ""}`
       );
     }
 
@@ -921,7 +921,7 @@ export class JmapClient {
     const response = await this.makeRequest(request);
     const result = this.getMethodResult(response, 0);
 
-    if (result.notUpdated && result.notUpdated[emailId]) {
+    if (result.notUpdated?.[emailId]) {
       throw new Error(`Failed to mark email as ${read ? "read" : "unread"}.`);
     }
   }
@@ -949,7 +949,7 @@ export class JmapClient {
     const response = await this.makeRequest(request);
     const result = this.getMethodResult(response, 0);
 
-    if (result.notUpdated && result.notUpdated[emailId]) {
+    if (result.notUpdated?.[emailId]) {
       throw new Error(`Failed to ${pinned ? "pin" : "unpin"} email.`);
     }
   }
@@ -989,7 +989,7 @@ export class JmapClient {
     const response = await this.makeRequest(request);
     const result = this.getMethodResult(response, 0);
 
-    if (result.notUpdated && result.notUpdated[emailId]) {
+    if (result.notUpdated?.[emailId]) {
       throw new Error("Failed to delete email.");
     }
   }
@@ -1043,7 +1043,7 @@ export class JmapClient {
     const response = await this.makeRequest(request);
     const result = this.getMethodResult(response, 0);
 
-    if (result.notUpdated && result.notUpdated[emailId]) {
+    if (result.notUpdated?.[emailId]) {
       throw new Error("Failed to move email.");
     }
   }
@@ -1076,7 +1076,7 @@ export class JmapClient {
     const response = await this.makeRequest(request);
     const result = this.getMethodResult(response, 0);
 
-    if (result.notUpdated && result.notUpdated[emailId]) {
+    if (result.notUpdated?.[emailId]) {
       throw new Error("Failed to add labels to email.");
     }
   }
@@ -1109,7 +1109,7 @@ export class JmapClient {
     const response = await this.makeRequest(request);
     const result = this.getMethodResult(response, 0);
 
-    if (result.notUpdated && result.notUpdated[emailId]) {
+    if (result.notUpdated?.[emailId]) {
       throw new Error("Failed to remove labels from email.");
     }
   }
@@ -1244,7 +1244,7 @@ export class JmapClient {
     // If not found, try by array index
     if (!attachment) {
       const index = Number.parseInt(attachmentId, 10);
-      if (!isNaN(index)) {
+      if (!Number.isNaN(index)) {
         attachment = email.attachments?.[index];
       }
     }
@@ -1281,7 +1281,7 @@ export class JmapClient {
       throw new Error("Save path contains null bytes");
     }
 
-    if (!resolved.startsWith(allowedDir + "/") && resolved !== allowedDir) {
+    if (!resolved.startsWith(`${allowedDir}/`) && resolved !== allowedDir) {
       throw new Error(`Save path must be within ${allowedDir}. ` + `Received: ${savePath}`);
     }
 
@@ -1298,7 +1298,7 @@ export class JmapClient {
     const url = await this.downloadAttachment(emailId, attachmentId);
 
     const response = await fetch(url, {
-      headers: { Authorization: this.auth.getAuthHeaders()["Authorization"] },
+      headers: { Authorization: this.auth.getAuthHeaders().Authorization },
     });
 
     if (!response.ok) {
@@ -1479,10 +1479,10 @@ export class JmapClient {
       const emailResponse = await this.makeRequest(emailRequest);
       const email = this.getListResult(emailResponse, 0)[0];
 
-      if (email && email.threadId) {
+      if (email?.threadId) {
         actualThreadId = email.threadId;
       }
-    } catch (error) {
+    } catch (_error) {
       // If email lookup fails, assume threadId is correct
     }
 
@@ -1526,7 +1526,7 @@ export class JmapClient {
     const threadResult = this.getMethodResult(response, 0);
 
     // Check if thread was found
-    if (threadResult.notFound && threadResult.notFound.includes(actualThreadId)) {
+    if (threadResult.notFound?.includes(actualThreadId)) {
       throw new Error(`Thread with ID '${actualThreadId}' not found`);
     }
 
