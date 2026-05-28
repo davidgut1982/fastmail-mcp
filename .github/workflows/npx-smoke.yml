@@ -29,4 +29,3 @@ jobs:
           export HOME="$(mktemp -d)"
           # Limit run time so the stdio server doesn't hang the job
           timeout 5s npx --yes "github:${{ github.repository }}@${{ github.ref_name }}" fastmail-mcp || true
-
