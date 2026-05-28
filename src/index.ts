@@ -528,6 +528,10 @@ function buildToolsList() {
               type: 'string',
               description: 'ID of the calendar (optional, defaults to all calendars)',
             },
+            query: {
+              type: 'string',
+              description: 'Filter events by title or description (case-insensitive)',
+            },
             startDate: {
               type: 'string',
               description: `Filter events starting from this date (ISO 8601). Naive inputs (no Z/offset) are interpreted in the user's configured timezone (${tz}). Examples: "2026-03-23T00:00:00" (local ${tz}), "2026-03-23T00:00:00Z" (UTC), "2026-03-23T00:00:00-05:00" (explicit CDT-style offset).`,
@@ -1496,17 +1500,28 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       }
 
       case 'list_calendar_events': {
-        const { calendarId, limit = 50, startDate, endDate } = args as any;
+        const { calendarId, limit = 50, startDate, endDate, query } = args as any;
+        // Client-side title/description filter applied to whichever backend
+        // (JMAP or CalDAV) returns the events. The backends don't support a
+        // free-text query, so we filter the materialized list here.
+        const filterByQuery = (events: any[]) => {
+          if (!query) return events;
+          const q = String(query).toLowerCase();
+          return events.filter((e: any) =>
+            (e.title && e.title.toLowerCase().includes(q)) ||
+            (e.description && e.description.toLowerCase().includes(q))
+          );
+        };
         try {
           const contactsClient = initializeContactsCalendarClient();
-          const events = await contactsClient.getCalendarEvents(calendarId, limit);
+          const events = filterByQuery(await contactsClient.getCalendarEvents(calendarId, limit));
           return { content: [{ type: 'text', text: JSON.stringify(events, null, 2) }] };
         } catch {
           const davClient = initializeCalDAVClient();
           if (!davClient) {
             throw new McpError(ErrorCode.InvalidRequest, 'JMAP calendars not available and CalDAV not configured. Set FASTMAIL_CALDAV_USERNAME and FASTMAIL_CALDAV_PASSWORD to use CalDAV.');
           }
-          const events = await davClient.getCalendarEvents(calendarId, limit, startDate, endDate);
+          const events = filterByQuery(await davClient.getCalendarEvents(calendarId, limit, startDate, endDate));
           return { content: [{ type: 'text', text: JSON.stringify(events, null, 2) }] };
         }
       }
@@ -1555,6 +1570,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         // that would swallow them and return fake success.
         const eventId = await davClient.createCalendarEvent({
           calendarId, title, description, start, end, location,
+          participants: participants || [],
         });
         return { content: [{ type: 'text', text: `Calendar event created via CalDAV. Event ID: ${eventId}` }] };
       }

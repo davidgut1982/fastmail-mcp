@@ -70,6 +70,36 @@ export interface CalendarEvent {
    * wall clock, not UTC.
    */
   timezone?: string;
+  /**
+   * Event attendees parsed from ICS ATTENDEE lines. Each entry carries the
+   * mailto address, optional CN display name, and whether RSVP was requested.
+   * Absent when the VEVENT has no ATTENDEE lines (non-scheduling event).
+   */
+  attendees?: Array<{ email: string; name?: string; rsvp?: boolean }>;
+}
+
+/**
+ * Parse ATTENDEE lines out of a VEVENT/ICS block.
+ *
+ * Why: get_calendar_event / list_calendar_events previously dropped attendee
+ * information entirely, so the agent could never tell who was invited to a
+ * meeting. This extracts the mailto address, CN display name, and RSVP flag.
+ * What: Returns an array of {email, name?, rsvp?} or undefined when none found.
+ * Test: Feed an ICS containing `ATTENDEE;CN="John Doe";RSVP=TRUE:mailto:john@example.com`
+ *       and assert one entry {email:'john@example.com', name:'John Doe', rsvp:true}.
+ */
+export function parseAttendees(
+  icsText: string,
+): Array<{ email: string; name?: string; rsvp?: boolean }> | undefined {
+  const attendeeLines = icsText.match(/^ATTENDEE[^:]*:mailto:(.+)$/gim) || [];
+  if (attendeeLines.length === 0) return undefined;
+  return attendeeLines.map(line => {
+    const email = line.split(':mailto:')[1]?.trim() || '';
+    const cnMatch = line.match(/CN="?([^";:]+)"?/i);
+    const name = cnMatch ? cnMatch[1].trim() : undefined;
+    const rsvp = /RSVP=TRUE/i.test(line);
+    return { email, name, rsvp };
+  });
 }
 
 /**
@@ -157,6 +187,7 @@ export function parseCalendarObject(obj: DAVCalendarObject): CalendarEvent {
     start: formatICalDate(rawStart),
     end: formatICalDate(rawEnd),
     location: location ? unescapeICalText(location) : undefined,
+    attendees: parseAttendees(vevent),
   };
   // Why: Localize at the point of construction so EVERY caller of
   // parseCalendarObject (getCalendarEventById, the unbounded fallback in
@@ -259,12 +290,58 @@ export function parseExpandedMultistatus(
           start: formatICalDate(rawStart),
           end: formatICalDate(rawEnd),
           location: location ? unescapeICalText(location) : undefined,
+          attendees: parseAttendees(vevent),
         }),
       );
     }
   }
 
   return events;
+}
+
+/** UUID pattern: 8-4-4-4-12 hex digits. */
+const UUID_RE = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
+
+/**
+ * Normalize a calendarId input to the canonical CalDAV collection URL form
+ * (full URL with trailing slash) accepted by the Fastmail CalDAV server.
+ *
+ * Accepts three forms:
+ *  1. Bare UUID:                  `4c646201-472c-...`
+ *     → `https://caldav.fastmail.com/dav/calendars/user/<username>/<uuid>/`
+ *  2. Full URL without trailing slash: `https://caldav.fastmail.com/.../uuid`
+ *     → appends `/`
+ *  3. Full URL with trailing slash: `https://caldav.fastmail.com/.../uuid/`
+ *     → returned unchanged
+ *
+ * Any other input (non-empty, non-UUID, non-URL) throws a descriptive error.
+ * Empty string throws immediately.
+ *
+ * Why: list_calendar_events previously matched by display name or exact URL,
+ * which happened to work when the model passed the full URL. create_calendar_event
+ * had trailing-slash normalization but no UUID expansion. Extracting this shared
+ * helper makes all calendarId-accepting methods symmetric.
+ */
+export function normalizeCalendarId(input: string, username: string): string {
+  if (!input || input.trim().length === 0) {
+    throw new Error('calendarId must not be empty');
+  }
+  const trimmed = input.trim();
+
+  // Form 1: bare UUID → expand to full CalDAV URL
+  if (UUID_RE.test(trimmed)) {
+    return `https://caldav.fastmail.com/dav/calendars/user/${username}/${trimmed}/`;
+  }
+
+  // Forms 2 & 3: full URL — just ensure trailing slash
+  if (trimmed.startsWith('http://') || trimmed.startsWith('https://')) {
+    return trimmed.endsWith('/') ? trimmed : trimmed + '/';
+  }
+
+  throw new Error(
+    `calendarId must be a UUID (e.g. "4c646201-472c-...") or a full CalDAV URL ` +
+    `(e.g. "https://caldav.fastmail.com/dav/calendars/user/..."), got: "${trimmed}"`
+  );
 }
 
 /**
@@ -408,8 +485,11 @@ export class CalDAVCalendarClient {
       c => c.displayName !== 'DEFAULT_TASK_CALENDAR_NAME'
     );
     if (calendarId) {
+      // Normalize so bare UUIDs and slash-variants all resolve to the same
+      // canonical URL form, making calendarId filtering symmetric with create.
+      const normalizedId = normalizeCalendarId(calendarId, this.config.username);
       targetCalendars = targetCalendars.filter(
-        c => c.url === calendarId || c.displayName === calendarId
+        c => c.url === normalizedId || c.displayName === calendarId
       );
     }
 
@@ -695,12 +775,35 @@ export class CalDAVCalendarClient {
       updatedIcs = updatedIcs.replace(/^ATTENDEE[^\r\n]*(\r?\n[ \t][^\r\n]*)*/gm, '');
       // Remove blank lines left behind
       updatedIcs = updatedIcs.replace(/(\r?\n){2,}/g, '\r\n');
-      // Insert new ATTENDEE lines before END:VEVENT
+      // Insert new ATTENDEE lines before END:VEVENT. RSVP=TRUE is required so
+      // Fastmail's CalDAV server generates and sends iTIP (RFC 5546) invites.
       const attendeeLines = updates.participants
-        .map(email => `ATTENDEE;CN=${email}:mailto:${email}`)
+        .map(email => `ATTENDEE;CN="${email}";RSVP=TRUE:mailto:${email}`)
         .join('\r\n');
       if (attendeeLines) {
         updatedIcs = updatedIcs.replace(/END:VEVENT/, `${attendeeLines}\r\nEND:VEVENT`);
+        // A scheduling event needs METHOD:REQUEST (VCALENDAR scope) and an
+        // ORGANIZER (VEVENT scope) for invites to go out. When updating an
+        // event that previously had no attendees these lines are absent, so
+        // inject them. Idempotent — skipped when already present.
+        if (!/^METHOD:REQUEST\r?\n/m.test(updatedIcs)) {
+          updatedIcs = updatedIcs.replace(
+            /^(BEGIN:VCALENDAR\r?\nVERSION:2\.0\r?\n)/m,
+            `$1METHOD:REQUEST\r\n`
+          );
+        }
+        if (!/^ORGANIZER[;:]/m.test(updatedIcs)) {
+          updatedIcs = updatedIcs.replace(
+            /END:VEVENT/,
+            `ORGANIZER;CN=David Gutowsky:mailto:davidgutowsky@fastmail.com\r\nEND:VEVENT`
+          );
+        }
+      } else {
+        // Removing all attendees: a METHOD:REQUEST with zero ATTENDEEs is invalid
+        // per RFC 5546, so strip METHOD:REQUEST (VCALENDAR) and the ORGANIZER line
+        // (VEVENT) as well, leaving a plain non-scheduling event.
+        updatedIcs = updatedIcs.replace(/^METHOD:REQUEST\r?\n/m, '');
+        updatedIcs = updatedIcs.replace(/^ORGANIZER[^\r\n]*(\r?\n[ \t][^\r\n]*)*\r?\n/m, '');
       }
     }
     if (updates.attachments !== undefined && updates.attachments.length > 0) {
@@ -744,6 +847,7 @@ export class CalDAVCalendarClient {
     start: string;
     end: string;
     location?: string;
+    participants?: Array<{ email: string; name?: string }>;
   }): Promise<string> {
     const client = await this.getClient();
 
@@ -751,8 +855,12 @@ export class CalDAVCalendarClient {
       this.calendars = await client.fetchCalendars();
     }
 
+    // Normalize calendarId: accept bare UUID, full URL with or without trailing
+    // slash. normalizeCalendarId expands UUIDs to full CalDAV URLs and ensures
+    // the canonical trailing-slash form. Display name is tried as a fallback.
+    const normalizedCalId = normalizeCalendarId(event.calendarId, this.config.username);
     const targetCal = this.calendars.find(
-      c => c.url === event.calendarId || c.displayName === event.calendarId
+      c => c.url === normalizedCalId || c.displayName === event.calendarId
     );
     if (!targetCal) {
       throw new Error(`Calendar not found: ${event.calendarId}`);
@@ -768,9 +876,22 @@ export class CalDAVCalendarClient {
     // making the write path TZ-aware in addition to the read path.
     const dtstart = toCalDateUTC(resolveDateInput(event.start));
     const dtend = toCalDateUTC(resolveDateInput(event.end));
+    // Why: When attendees are present, the ICS must carry METHOD:REQUEST plus an
+    // ORGANIZER and one ATTENDEE line per participant so that Fastmail's CalDAV
+    // server generates and sends iTIP (RFC 5546) invite emails. Without these
+    // lines the event is created but no invites go out and the attendees never
+    // appear on the event. When there are no participants we keep the original
+    // minimal ICS (no METHOD/ORGANIZER/ATTENDEE) to avoid spurious scheduling.
+    const hasParticipants = !!(event.participants && event.participants.length > 0);
+    const attendeeLines = hasParticipants
+      ? event.participants!.map(
+          p => `ATTENDEE;CN="${p.name || p.email}";RSVP=TRUE:mailto:${p.email}`,
+        )
+      : [];
     const ical = [
       'BEGIN:VCALENDAR',
       'VERSION:2.0',
+      hasParticipants ? 'METHOD:REQUEST' : '',
       'PRODID:-//fastmail-mcp//CalDAV//EN',
       'BEGIN:VEVENT',
       `UID:${uid}`,
@@ -780,6 +901,8 @@ export class CalDAVCalendarClient {
       `SUMMARY:${escapeICalText(event.title)}`,
       event.description ? `DESCRIPTION:${escapeICalText(event.description)}` : '',
       event.location ? `LOCATION:${escapeICalText(event.location)}` : '',
+      hasParticipants ? 'ORGANIZER;CN=David Gutowsky:mailto:davidgutowsky@fastmail.com' : '',
+      ...attendeeLines,
       'END:VEVENT',
       'END:VCALENDAR',
     ].filter(Boolean).join('\r\n');
@@ -848,8 +971,12 @@ export class CalDAVCalendarClient {
       this.calendars = await client.fetchCalendars();
     }
 
+    // Normalize calendarId for the same UUID/trailing-slash symmetry as create.
     const targetCals = calendarId
-      ? this.calendars.filter(c => c.url === calendarId || c.displayName === calendarId)
+      ? (() => {
+          const normalizedId = normalizeCalendarId(calendarId, this.config.username);
+          return this.calendars.filter(c => c.url === normalizedId || c.displayName === calendarId);
+        })()
       : this.calendars;
 
     for (const cal of targetCals) {
