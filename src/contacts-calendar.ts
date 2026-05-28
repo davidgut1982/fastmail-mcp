@@ -234,7 +234,33 @@ export class ContactsCalendarClient extends JmapClient {
       start: event.start,
       end: event.end,
       location: event.location || '',
-      participants: event.participants || []
+      // Why: Fastmail's JMAP CalendarEvent follows JSCalendar (RFC 8984), where
+      // participants is a MAP keyed by participant id whose values carry sendTo
+      // (imip mailto), roles, and scheduleAgent. Sending a raw array (the prior
+      // behavior) is silently ignored, so attendees were dropped and no invites
+      // were sent. Building the map with an explicit organizer + per-attendee
+      // entries and scheduleAgent:'server' makes Fastmail dispatch iTIP invites.
+      participants: (() => {
+        if (!event.participants || event.participants.length === 0) return undefined;
+        const map: Record<string, object> = {
+          'organizer': {
+            name: 'David Gutowsky',
+            sendTo: { imip: 'mailto:davidgutowsky@fastmail.com' },
+            roles: { owner: true, attendee: true },
+            scheduleAgent: 'server',
+          }
+        };
+        for (const p of event.participants) {
+          const key = p.email;
+          map[key] = {
+            name: p.name || p.email,
+            sendTo: { imip: `mailto:${p.email}` },
+            roles: { attendee: true },
+            scheduleAgent: 'server',
+          };
+        }
+        return map;
+      })()
     };
 
     const request: JmapRequest = {

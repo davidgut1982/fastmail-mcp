@@ -8,6 +8,7 @@ import {
   parseExpandedMultistatus,
   escapeICalText,
   parallelFetchAndMerge,
+  normalizeCalendarId,
   CalDAVCalendarClient,
 } from './caldav-client.js';
 import {
@@ -1807,5 +1808,145 @@ END:VCALENDAR]]></C:calendar-data>
     assert.equal(localized.startUtc, '2026-05-07T13:00:00Z');
     assert.equal(localized.endUtc, '2026-05-07T14:00:00Z');
     assert.equal(localized.timezone, 'UTC');
+  });
+});
+
+// -----------------------------------------------------------------
+// normalizeCalendarId — UUID symmetry fix (prod task #20 root cause)
+//
+// Why: create_calendar_event previously rejected bare UUIDs (the model's
+// natural output from list_calendars) while list_calendar_events accepted
+// them via URL-exact match. The normalizer is the single source of truth
+// for calendarId resolution across all three methods.
+// -----------------------------------------------------------------
+describe('normalizeCalendarId', () => {
+  const USER = 'davidgutowsky@fastmail.com';
+  const UUID = '4c646201-472c-4377-b4c8-10f4455c6ecf';
+  const BASE = 'https://caldav.fastmail.com/dav/calendars/user';
+  const FULL_WITH_SLASH = `${BASE}/${USER}/${UUID}/`;
+  const FULL_WITHOUT_SLASH = `${BASE}/${USER}/${UUID}`;
+
+  it('form 1: bare UUID expands to full CalDAV URL with trailing slash', () => {
+    assert.equal(normalizeCalendarId(UUID, USER), FULL_WITH_SLASH);
+  });
+
+  it('form 1: UUID matching is case-insensitive', () => {
+    // RFC 4122 UUIDs may be upper or lower case
+    assert.equal(
+      normalizeCalendarId(UUID.toUpperCase(), USER),
+      `${BASE}/${USER}/${UUID.toUpperCase()}/`,
+    );
+  });
+
+  it('form 2: full URL without trailing slash gets slash appended', () => {
+    assert.equal(normalizeCalendarId(FULL_WITHOUT_SLASH, USER), FULL_WITH_SLASH);
+  });
+
+  it('form 3: full URL with trailing slash is returned unchanged', () => {
+    assert.equal(normalizeCalendarId(FULL_WITH_SLASH, USER), FULL_WITH_SLASH);
+  });
+
+  it('trims leading/trailing whitespace before matching', () => {
+    assert.equal(normalizeCalendarId(`  ${UUID}  `, USER), FULL_WITH_SLASH);
+    assert.equal(normalizeCalendarId(`  ${FULL_WITHOUT_SLASH}  `, USER), FULL_WITH_SLASH);
+  });
+
+  it('throws on empty string', () => {
+    assert.throws(() => normalizeCalendarId('', USER), /must not be empty/);
+  });
+
+  it('throws on whitespace-only string', () => {
+    assert.throws(() => normalizeCalendarId('   ', USER), /must not be empty/);
+  });
+
+  it('throws on arbitrary string that is neither UUID nor URL', () => {
+    assert.throws(
+      () => normalizeCalendarId('Cub Scouts', USER),
+      /calendarId must be a UUID.*or a full CalDAV URL/,
+    );
+  });
+
+  it('throws on a display-name-like string', () => {
+    assert.throws(
+      () => normalizeCalendarId('My Calendar', USER),
+      /calendarId must be a UUID/,
+    );
+  });
+});
+
+// -----------------------------------------------------------------
+// CalDAVCalendarClient.createCalendarEvent — calendarId input forms
+//
+// Why: createCalendarEvent must accept all 3 input forms (bare UUID,
+// full URL with slash, full URL without slash) so the model's natural
+// output from list_calendars always works.
+// -----------------------------------------------------------------
+describe('CalDAVCalendarClient.createCalendarEvent calendarId forms', () => {
+  const USER = 'davidgutowsky@fastmail.com';
+  const UUID = '4c646201-472c-4377-b4c8-10f4455c6ecf';
+  const BASE = 'https://caldav.fastmail.com/dav/calendars/user';
+  const FULL_WITH_SLASH = `${BASE}/${USER}/${UUID}/`;
+  const FULL_WITHOUT_SLASH = `${BASE}/${USER}/${UUID}`;
+
+  function makeCreateClient() {
+    const client = new CalDAVCalendarClient({ username: USER, password: 'test' });
+    const mockCalendar = { displayName: 'Cub Scouts', url: FULL_WITH_SLASH };
+    const mockDAVClient = {
+      login: async () => {},
+      fetchCalendars: async () => [mockCalendar],
+      createCalendarObject: async () => ({ ok: true, status: 201 }),
+    };
+    (client as any).client = mockDAVClient;
+    return { client, mockCalendar };
+  }
+
+  async function runCreate(calendarId: string) {
+    const { client } = makeCreateClient();
+    const originalFetch = globalThis.fetch;
+    // Stub: verification GET after PUT → 200 OK (simulates event persisted)
+    (globalThis as any).fetch = async (_url: string, _init: any) => ({
+      ok: true,
+      status: 200,
+      statusText: 'OK',
+      text: async () => '',
+    });
+    try {
+      const uid = await client.createCalendarEvent({
+        calendarId,
+        title: 'Test',
+        start: '2026-06-28T23:00:00Z',
+        end: '2026-06-28T23:30:00Z',
+      });
+      assert.ok(typeof uid === 'string' && uid.length > 0, `expected a UID string, got ${uid}`);
+      return uid;
+    } finally {
+      (globalThis as any).fetch = originalFetch;
+    }
+  }
+
+  it('form 1: bare UUID succeeds', async () => {
+    await runCreate(UUID);
+  });
+
+  it('form 2: full URL without trailing slash succeeds', async () => {
+    await runCreate(FULL_WITHOUT_SLASH);
+  });
+
+  it('form 3: full URL with trailing slash succeeds', async () => {
+    await runCreate(FULL_WITH_SLASH);
+  });
+
+  it('throws on non-UUID non-URL calendarId', async () => {
+    const { client } = makeCreateClient();
+    await assert.rejects(
+      () =>
+        client.createCalendarEvent({
+          calendarId: 'Cub Scouts',
+          title: 'Test',
+          start: '2026-06-28T23:00:00Z',
+          end: '2026-06-28T23:30:00Z',
+        }),
+      /calendarId must be a UUID/,
+    );
   });
 });
