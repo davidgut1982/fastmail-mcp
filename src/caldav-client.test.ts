@@ -10,6 +10,11 @@ import {
   parallelFetchAndMerge,
   normalizeCalendarId,
   CalDAVCalendarClient,
+  parseAlarms,
+  buildValarm,
+  parseRecurrence,
+  buildRrule,
+  parseOrganizer,
 } from './caldav-client.js';
 import {
   resolveDateInput,
@@ -1948,5 +1953,192 @@ describe('CalDAVCalendarClient.createCalendarEvent calendarId forms', () => {
         }),
       /calendarId must be a UUID/,
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// VALARM / Alarm support (RFC 5545 §3.6.6)
+//
+// Why: Alarms were the original trigger for the calendar feature gap audit.
+// These tests verify parseAlarms, buildValarm, and the ICS builder integration.
+// ---------------------------------------------------------------------------
+
+describe('parseAlarms', () => {
+  it('parses a single VALARM block', () => {
+    const vevent = [
+      'BEGIN:VEVENT',
+      'SUMMARY:Test',
+      'BEGIN:VALARM',
+      'ACTION:DISPLAY',
+      'TRIGGER:-PT15M',
+      'DESCRIPTION:Reminder',
+      'END:VALARM',
+      'END:VEVENT',
+    ].join('\r\n');
+    const alarms = parseAlarms(vevent);
+    assert.ok(alarms);
+    assert.equal(alarms!.length, 1);
+    assert.equal(alarms![0].action, 'DISPLAY');
+    assert.equal(alarms![0].trigger, '-PT15M');
+    assert.equal(alarms![0].description, 'Reminder');
+  });
+
+  it('parses multiple VALARM blocks', () => {
+    const vevent = [
+      'BEGIN:VEVENT',
+      'SUMMARY:Test',
+      'BEGIN:VALARM',
+      'ACTION:DISPLAY',
+      'TRIGGER:-PT15M',
+      'END:VALARM',
+      'BEGIN:VALARM',
+      'ACTION:DISPLAY',
+      'TRIGGER:-P1D',
+      'DESCRIPTION:Day before',
+      'END:VALARM',
+      'END:VEVENT',
+    ].join('\r\n');
+    const alarms = parseAlarms(vevent);
+    assert.ok(alarms);
+    assert.equal(alarms!.length, 2);
+    assert.equal(alarms![0].trigger, '-PT15M');
+    assert.equal(alarms![1].trigger, '-P1D');
+    assert.equal(alarms![1].description, 'Day before');
+  });
+
+  it('returns undefined when no VALARM present', () => {
+    const vevent = 'BEGIN:VEVENT\r\nSUMMARY:Test\r\nEND:VEVENT';
+    assert.equal(parseAlarms(vevent), undefined);
+  });
+});
+
+describe('buildValarm', () => {
+  it('builds a DISPLAY alarm with default action', () => {
+    const block = buildValarm('-PT30M');
+    assert.ok(block.includes('BEGIN:VALARM'));
+    assert.ok(block.includes('ACTION:DISPLAY'));
+    assert.ok(block.includes('TRIGGER:-PT30M'));
+    assert.ok(block.includes('END:VALARM'));
+    // DISPLAY action must have a DESCRIPTION per RFC 5545
+    assert.ok(block.includes('DESCRIPTION:Reminder'));
+  });
+
+  it('builds an EMAIL alarm with custom description', () => {
+    const block = buildValarm('-P1W', 'EMAIL', 'Week before');
+    assert.ok(block.includes('ACTION:EMAIL'));
+    assert.ok(block.includes('TRIGGER:-P1W'));
+    assert.ok(block.includes('DESCRIPTION:Week before'));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// RRULE / Recurrence support (RFC 5545 §3.3.10)
+// ---------------------------------------------------------------------------
+
+describe('parseRecurrence', () => {
+  it('parses a WEEKLY RRULE with BYDAY and COUNT', () => {
+    const vevent = 'BEGIN:VEVENT\r\nRRULE:FREQ=WEEKLY;BYDAY=TH;COUNT=10\r\nEND:VEVENT';
+    const rec = parseRecurrence(vevent);
+    assert.ok(rec);
+    assert.equal(rec!.freq, 'WEEKLY');
+    assert.deepEqual(rec!.byDay, ['TH']);
+    assert.equal(rec!.count, 10);
+  });
+
+  it('returns undefined when no RRULE', () => {
+    const vevent = 'BEGIN:VEVENT\r\nSUMMARY:Test\r\nEND:VEVENT';
+    assert.equal(parseRecurrence(vevent), undefined);
+  });
+});
+
+describe('buildRrule', () => {
+  it('builds a simple DAILY rule', () => {
+    const rrule = buildRrule({ freq: 'DAILY' });
+    assert.equal(rrule, 'FREQ=DAILY');
+  });
+
+  it('builds a WEEKLY rule with interval and byDay', () => {
+    const rrule = buildRrule({ freq: 'WEEKLY', interval: 2, byDay: ['MO', 'WE', 'FR'] });
+    assert.equal(rrule, 'FREQ=WEEKLY;INTERVAL=2;BYDAY=MO,WE,FR');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// parseExtendedProperties — alarms, status, transparency, etc. on read
+// ---------------------------------------------------------------------------
+
+describe('parseCalendarObject — extended properties', () => {
+  it('surfaces alarms, status, categories, and transparency', () => {
+    const ics = [
+      'BEGIN:VCALENDAR',
+      'VERSION:2.0',
+      'BEGIN:VEVENT',
+      'UID:test-123@fastmail-mcp',
+      'DTSTAMP:20260704T000000Z',
+      'DTSTART:20260704T090000Z',
+      'DTEND:20260704T100000Z',
+      'SUMMARY:Meeting',
+      'STATUS:CONFIRMED',
+      'TRANSP:OPAQUE',
+      'PRIORITY:1',
+      'CLASS:PRIVATE',
+      'CATEGORIES:Work,Important',
+      'SEQUENCE:2',
+      'BEGIN:VALARM',
+      'ACTION:DISPLAY',
+      'TRIGGER:-PT15M',
+      'DESCRIPTION:Leave now',
+      'END:VALARM',
+      'END:VEVENT',
+      'END:VCALENDAR',
+    ].join('\r\n');
+
+    const event = parseCalendarObject({ url: 'http://example.com/test.ics', data: ics });
+    assert.equal(event.status, 'CONFIRMED');
+    assert.equal(event.transparency, 'OPAQUE');
+    assert.equal(event.priority, 1);
+    assert.equal(event.classification, 'PRIVATE');
+    assert.deepEqual(event.categories, ['Work', 'Important']);
+    assert.equal(event.sequence, 2);
+    assert.ok(event.alarms);
+    assert.equal(event.alarms!.length, 1);
+    assert.equal(event.alarms![0].trigger, '-PT15M');
+    assert.equal(event.alarms![0].description, 'Leave now');
+  });
+
+  it('detects all-day events via DTSTART;VALUE=DATE', () => {
+    const ics = [
+      'BEGIN:VCALENDAR',
+      'VERSION:2.0',
+      'BEGIN:VEVENT',
+      'UID:allday-456@fastmail-mcp',
+      'DTSTAMP:20260704T000000Z',
+      'DTSTART;VALUE=DATE:20260704',
+      'DTEND;VALUE=DATE:20260705',
+      'SUMMARY:Holiday',
+      'END:VEVENT',
+      'END:VCALENDAR',
+    ].join('\r\n');
+
+    const event = parseCalendarObject({ url: 'http://example.com/allday.ics', data: ics });
+    assert.equal(event.allDay, true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// parseOrganizer (RFC 5545 §3.8.4.3)
+// ---------------------------------------------------------------------------
+
+describe('parseOrganizer', () => {
+  it('extracts email and CN from ORGANIZER line', () => {
+    const vevent = 'BEGIN:VEVENT\r\nORGANIZER;CN=John Doe:mailto:john@example.com\r\nEND:VEVENT';
+    const org = parseOrganizer(vevent);
+    assert.ok(org);
+    assert.equal(org!.email, 'john@example.com');
+    assert.equal(org!.name, 'John Doe');
+  });
+
+  it('returns undefined when no ORGANIZER', () => {
+    assert.equal(parseOrganizer('BEGIN:VEVENT\r\nSUMMARY:Test\r\nEND:VEVENT'), undefined);
   });
 });

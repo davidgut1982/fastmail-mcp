@@ -39,6 +39,31 @@ export interface CalendarInfo {
   color?: string;
 }
 
+/**
+ * A parsed VALARM alarm (RFC 5545 §3.6.6).
+ * `trigger` is the raw trigger value, e.g. `-PT15M` (15 min before),
+ * `-P1D` (1 day before), or an absolute `YYYYMMDDTHHMMSSZ`.
+ */
+export interface ParsedAlarm {
+  action: string;
+  trigger: string;
+  description?: string;
+}
+
+/**
+ * A parsed RRULE recurrence rule (RFC 5545 §3.3.10).
+ * Only the common parts are surfaced; the raw value is in `raw`.
+ */
+export interface ParsedRecurrence {
+  freq?: string;
+  interval?: number;
+  count?: number;
+  until?: string;
+  byDay?: string[];
+  byMonthDay?: number[];
+  raw: string;
+}
+
 export interface CalendarEvent {
   id: string;
   url: string;
@@ -76,6 +101,26 @@ export interface CalendarEvent {
    * Absent when the VEVENT has no ATTENDEE lines (non-scheduling event).
    */
   attendees?: Array<{ email: string; name?: string; rsvp?: boolean }>;
+  /** Whether this is an all-day event (DTSTART;VALUE=DATE). */
+  allDay?: boolean;
+  /** Event status (RFC 5545 §3.8.1.11). */
+  status?: string;
+  /** Free/busy transparency (RFC 5545 §3.8.2.7). OPAQUE=busy, TRANSPARENT=free. */
+  transparency?: string;
+  /** Event priority 0-9 (RFC 5545 §3.8.1.9). 0=undefined, 1=highest, 9=lowest. */
+  priority?: number;
+  /** Privacy class (RFC 5545 §3.8.1.3). PUBLIC, PRIVATE, or CONFIDENTIAL. */
+  classification?: string;
+  /** Categories/tags (RFC 5545 §3.8.1.2). */
+  categories?: string[];
+  /** Alarms parsed from VALARM blocks (RFC 5545 §3.6.6). */
+  alarms?: ParsedAlarm[];
+  /** Recurrence rule (RFC 5545 §3.3.10). Only present on the master VEVENT. */
+  recurrence?: ParsedRecurrence;
+  /** Organizer parsed from ORGANIZER line (RFC 5545 §3.8.4.3). */
+  organizer?: { email: string; name?: string };
+  /** Revision sequence number (RFC 5545 §3.8.7.4). */
+  sequence?: number;
 }
 
 /**
@@ -100,6 +145,134 @@ export function parseAttendees(
     const rsvp = /RSVP=TRUE/i.test(line);
     return { email, name, rsvp };
   });
+}
+
+/**
+ * Parse all VALARM blocks from a VEVENT (RFC 5545 §3.6.6).
+ *
+ * Why: Previously, alarms were silently dropped on read. The agent couldn't
+ * see existing alarms, and the original use case (add reminders to events)
+ * was impossible because the data was invisible.
+ *
+ * What: Extracts ACTION, TRIGGER, and DESCRIPTION from each VALARM block
+ * within the VEVENT. Returns undefined when no VALARM is present.
+ *
+ * Test: Feed ICS with `BEGIN:VALARM\r\nTRIGGER:-PT15M\r\nACTION:DISPLAY\r\nDESCRIPTION:Reminder\r\nEND:VALARM`
+ *       and assert [{action:'DISPLAY', trigger:'-PT15M', description:'Reminder'}].
+ */
+export function parseAlarms(vevent: string): ParsedAlarm[] | undefined {
+  const alarmRe = /BEGIN:VALARM[\s\S]*?END:VALARM/gi;
+  const alarms: ParsedAlarm[] = [];
+  let m: RegExpExecArray | null;
+  while ((m = alarmRe.exec(vevent)) !== null) {
+    const block = m[0];
+    const action = parseICalValue(block, 'ACTION') || 'DISPLAY';
+    const trigger = parseICalValue(block, 'TRIGGER') || '';
+    const description = parseICalValue(block, 'DESCRIPTION');
+    alarms.push({
+      action: action.toUpperCase(),
+      trigger,
+      description: description || undefined,
+    });
+  }
+  return alarms.length > 0 ? alarms : undefined;
+}
+
+/**
+ * Parse an RRULE line into a structured object (RFC 5545 §3.3.10).
+ *
+ * Input: `RRULE:FREQ=WEEKLY;BYDAY=TH;COUNT=10`
+ * Output: { freq:'WEEKLY', byDay:['TH'], count:10, raw:'FREQ=WEEKLY;BYDAY=TH;COUNT=10' }
+ */
+export function parseRecurrence(vevent: string): ParsedRecurrence | undefined {
+  const raw = parseICalValue(vevent, 'RRULE');
+  if (!raw) return undefined;
+  const parts = raw.split(';');
+  const result: ParsedRecurrence = { raw };
+  for (const part of parts) {
+    const [k, v] = part.split('=');
+    if (!k || !v) continue;
+    switch (k.toUpperCase()) {
+      case 'FREQ': result.freq = v.toUpperCase(); break;
+      case 'INTERVAL': result.interval = parseInt(v, 10); break;
+      case 'COUNT': result.count = parseInt(v, 10); break;
+      case 'UNTIL': result.until = v; break;
+      case 'BYDAY': result.byDay = v.split(','); break;
+      case 'BYMONTHDAY': result.byMonthDay = v.split(',').map(n => parseInt(n, 10)); break;
+    }
+  }
+  return result;
+}
+
+/**
+ * Parse the ORGANIZER line (RFC 5545 §3.8.4.3).
+ * Returns { email, name? } or undefined when no ORGANIZER is present.
+ */
+export function parseOrganizer(vevent: string): { email: string; name?: string } | undefined {
+  const orgLine = vevent.match(/^ORGANIZER[^:]*:mailto:(.+)$/im);
+  if (!orgLine) return undefined;
+  const email = orgLine[1].trim();
+  const cnMatch = orgLine[0].match(/CN="?([^";:]+)"?/i);
+  return { email, name: cnMatch ? cnMatch[1].trim() : undefined };
+}
+
+/**
+ * Parse CATEGORIES (RFC 5545 §3.8.1.2). Values are comma-separated.
+ */
+export function parseCategories(vevent: string): string[] | undefined {
+  const raw = parseICalValue(vevent, 'CATEGORIES');
+  if (!raw) return undefined;
+  return raw.split(',').map(c => c.trim()).filter(Boolean);
+}
+
+/**
+ * Build a VALARM ICS block (RFC 5545 §3.6.6).
+ *
+ * @param trigger Duration string (e.g. '-PT15M', '-P1D', '-PT1H') or absolute datetime.
+ * @param action  'DISPLAY' (default) or 'EMAIL'.
+ * @param description Optional description shown in the alarm popup.
+ * @returns A complete BEGIN:VALARM…END:VALARM block (without trailing CRLF).
+ */
+export function buildValarm(
+  trigger: string,
+  action: string = 'DISPLAY',
+  description?: string,
+): string {
+  const lines = [
+    'BEGIN:VALARM',
+    `ACTION:${action.toUpperCase()}`,
+    `TRIGGER:${trigger}`,
+  ];
+  if (description) {
+    lines.push(`DESCRIPTION:${escapeICalText(description)}`);
+  } else if (action.toUpperCase() === 'DISPLAY') {
+    lines.push('DESCRIPTION:Reminder');
+  }
+  lines.push('END:VALARM');
+  return lines.join('\r\n');
+}
+
+/**
+ * Build an RRULE value string from structured params (RFC 5545 §3.3.10).
+ *
+ * @param recurrence { freq, interval?, until?, count?, byDay?, byMonthDay? }
+ * @returns e.g. `FREQ=WEEKLY;BYDAY=TH;COUNT=10`
+ */
+export function buildRrule(recurrence: {
+  freq: string;
+  interval?: number;
+  until?: string;
+  count?: number;
+  byDay?: string[];
+  byMonthDay?: number[];
+}): string {
+  const parts: string[] = [`FREQ=${recurrence.freq.toUpperCase()}`];
+  if (recurrence.interval) parts.push(`INTERVAL=${recurrence.interval}`);
+  if (recurrence.count !== undefined) parts.push(`COUNT=${recurrence.count}`);
+  if (recurrence.until) parts.push(`UNTIL=${recurrence.until}`);
+  if (recurrence.byDay?.length) parts.push(`BYDAY=${recurrence.byDay.join(',')}`);
+  if (recurrence.byMonthDay?.length) parts.push(`BYMONTHDAY=${recurrence.byMonthDay.join(',')}`);
+  return parts.join(';');
 }
 
 /**
@@ -188,6 +361,7 @@ export function parseCalendarObject(obj: DAVCalendarObject): CalendarEvent {
     end: formatICalDate(rawEnd),
     location: location ? unescapeICalText(location) : undefined,
     attendees: parseAttendees(vevent),
+    ...parseExtendedProperties(vevent),
   };
   // Why: Localize at the point of construction so EVERY caller of
   // parseCalendarObject (getCalendarEventById, the unbounded fallback in
@@ -195,6 +369,39 @@ export function parseCalendarObject(obj: DAVCalendarObject): CalendarEvent {
   // the same TZ-aware shape. The agent's morning/afternoon heuristic only
   // works correctly when the JSON it sees is in the user's local zone.
   return localizeEventTimes(base);
+}
+
+/**
+ * Extract all RFC 5545 properties beyond the baseline set (SUMMARY, DTSTART,
+ * etc.) from a VEVENT block. Centralised so both parseCalendarObject and
+ * parseExpandedMultistatus surface the same fields.
+ *
+ * Why: Previously, alarms, recurrence, status, transparency, priority,
+ * categories, classification, organizer, and sequence were silently
+ * discarded. This makes them visible to the agent on every read path.
+ */
+function parseExtendedProperties(vevent: string): Partial<CalendarEvent> {
+  const isAllDay = /^DTSTART[;:]VALUE=DATE/m.test(vevent);
+  const status = parseICalValue(vevent, 'STATUS');
+  const transparency = parseICalValue(vevent, 'TRANSP');
+  const priorityRaw = parseICalValue(vevent, 'PRIORITY');
+  const classification = parseICalValue(vevent, 'CLASS');
+  const sequenceRaw = parseICalValue(vevent, 'SEQUENCE');
+  const eventUrl = parseICalValue(vevent, 'URL');
+
+  return {
+    allDay: isAllDay || undefined,
+    status: status || undefined,
+    transparency: transparency || undefined,
+    priority: priorityRaw !== undefined ? parseInt(priorityRaw, 10) : undefined,
+    classification: classification || undefined,
+    categories: parseCategories(vevent),
+    alarms: parseAlarms(vevent),
+    recurrence: parseRecurrence(vevent),
+    organizer: parseOrganizer(vevent),
+    sequence: sequenceRaw !== undefined ? parseInt(sequenceRaw, 10) : undefined,
+    ...(eventUrl ? { url: eventUrl } : {}),
+  };
 }
 
 /**
@@ -291,6 +498,7 @@ export function parseExpandedMultistatus(
           end: formatICalDate(rawEnd),
           location: location ? unescapeICalText(location) : undefined,
           attendees: parseAttendees(vevent),
+          ...parseExtendedProperties(vevent),
         }),
       );
     }
@@ -700,6 +908,18 @@ export class CalDAVCalendarClient {
     location?: string;
     participants?: string[];
     attachments?: string[];
+    /** Alarms to set on the event (replaces existing alarms). */
+    alarms?: Array<{ trigger: string; action?: string; description?: string }>;
+    /** Event status: TENTATIVE, CONFIRMED, or CANCELLED. */
+    status?: string;
+    /** Transparency: OPAQUE (busy) or TRANSPARENT (free). */
+    transparency?: string;
+    /** Priority 0-9 (1=highest). */
+    priority?: number;
+    /** Privacy class: PUBLIC, PRIVATE, or CONFIDENTIAL. */
+    classification?: string;
+    /** Categories/tags (replaces existing). */
+    categories?: string[];
   }): Promise<CalendarEvent> {
     const client = await this.getClient();
 
@@ -825,6 +1045,56 @@ export class CalDAVCalendarClient {
       updatedIcs = updatedIcs.replace(/END:VEVENT/, `${attachLines}\r\nEND:VEVENT`);
     }
 
+    // --- Alarms (VALARM) ---
+    // Replace existing VALARM blocks (if any) with the new set, or add new ones.
+    // Why: Previously alarms couldn't be added via update. Now the agent can
+    // attach reminders to an existing event (the original use case).
+    if (updates.alarms !== undefined) {
+      // Strip all existing VALARM blocks from the VEVENT.
+      updatedIcs = updatedIcs.replace(/BEGIN:VALARM[\s\S]*?END:VALARM\r?\n?/gi, '');
+      // Inject new VALARM blocks before END:VEVENT.
+      if (updates.alarms.length > 0) {
+        const alarmBlocks = updates.alarms
+          .map(a => buildValarm(a.trigger, a.action, a.description))
+          .join('\r\n');
+        updatedIcs = updatedIcs.replace(/END:VEVENT/, `${alarmBlocks}\r\nEND:VEVENT`);
+      }
+    }
+
+    // --- Simple scalar properties (STATUS, TRANSP, PRIORITY, CLASS, CATEGORIES) ---
+    if (updates.status !== undefined && updates.status !== '') {
+      updatedIcs = setVEventProp(updatedIcs, 'STATUS', updates.status.toUpperCase());
+    }
+    if (updates.transparency !== undefined && updates.transparency !== '') {
+      updatedIcs = setVEventProp(updatedIcs, 'TRANSP', updates.transparency.toUpperCase());
+    }
+    if (updates.priority !== undefined) {
+      updatedIcs = setVEventProp(updatedIcs, 'PRIORITY', String(updates.priority));
+    }
+    if (updates.classification !== undefined && updates.classification !== '') {
+      updatedIcs = setVEventProp(updatedIcs, 'CLASS', updates.classification.toUpperCase());
+    }
+    if (updates.categories !== undefined) {
+      // Remove existing CATEGORIES line(s).
+      updatedIcs = updatedIcs.replace(/^CATEGORIES[;:].*(?:\r?\n[ \t][^\r\n]*)*/gm, '');
+      if (updates.categories.length > 0) {
+        const catVal = updates.categories.map(escapeICalText).join(',');
+        updatedIcs = updatedIcs.replace(/END:VEVENT/, `CATEGORIES:${catVal}\r\nEND:VEVENT`);
+      }
+    }
+
+    // --- SEQUENCE bump (RFC 5545 §3.8.7.4) ---
+    // Why: Incrementing SEQUENCE on every update signals to calendar clients
+    // that the event changed, so they refresh their cached copy. Without this,
+    // some clients (Apple Calendar, Outlook) may show stale data.
+    const existingSeqMatch = updatedIcs.match(/^SEQUENCE:(\d+)/m);
+    const nextSeq = existingSeqMatch ? parseInt(existingSeqMatch[1], 10) + 1 : 0;
+    if (existingSeqMatch) {
+      updatedIcs = updatedIcs.replace(/^SEQUENCE:\d+/m, `SEQUENCE:${nextSeq}`);
+    } else {
+      updatedIcs = updatedIcs.replace(/END:VEVENT/, `SEQUENCE:${nextSeq}\r\nEND:VEVENT`);
+    }
+
     // Bump DTSTAMP to now
     const now = new Date().toISOString().replace(/[-:]/g, '').replace(/\.\d{3}/, '');
     updatedIcs = updatedIcs.replace(/^DTSTAMP:.*$/m, `DTSTAMP:${now}`);
@@ -848,6 +1118,31 @@ export class CalDAVCalendarClient {
     end: string;
     location?: string;
     participants?: Array<{ email: string; name?: string }>;
+    /** All-day event: emits DTSTART;VALUE=DATE instead of a timed datetime. */
+    allDay?: boolean;
+    /** Alarms to attach (e.g. [{trigger:'-PT15M'}, {trigger:'-P1D'}]). */
+    alarms?: Array<{ trigger: string; action?: string; description?: string }>;
+    /** Recurrence rule (e.g. {freq:'WEEKLY', byDay:['TH'], count:10}). */
+    recurrence?: {
+      freq: string;
+      interval?: number;
+      until?: string;
+      count?: number;
+      byDay?: string[];
+      byMonthDay?: number[];
+    };
+    /** Event status: TENTATIVE, CONFIRMED, or CANCELLED. */
+    status?: string;
+    /** Transparency: OPAQUE (busy) or TRANSPARENT (free). */
+    transparency?: string;
+    /** Priority 0-9 (1=highest). */
+    priority?: number;
+    /** Privacy class: PUBLIC, PRIVATE, or CONFIDENTIAL. */
+    classification?: string;
+    /** Categories/tags. */
+    categories?: string[];
+    /** Event URL (conference link, etc.). */
+    url?: string;
   }): Promise<string> {
     const client = await this.getClient();
 
@@ -874,8 +1169,18 @@ export class CalDAVCalendarClient {
     // interprets naive inputs in the configured zone before handing off to
     // toCalDateUTC for RFC 5545 formatting. This complements 9f3160c by
     // making the write path TZ-aware in addition to the read path.
-    const dtstart = toCalDateUTC(resolveDateInput(event.start));
-    const dtend = toCalDateUTC(resolveDateInput(event.end));
+    //
+    // For all-day events (allDay=true), we emit VALUE=DATE dates (YYYYMMDD)
+    // instead of UTC datetimes, per RFC 5545 §3.3.4.
+    const isAllDay = !!event.allDay;
+    const dtstart = isAllDay
+      ? resolveDateInput(event.start).slice(0, 10).replace(/-/g, '')
+      : toCalDateUTC(resolveDateInput(event.start));
+    const dtend = isAllDay
+      ? resolveDateInput(event.end).slice(0, 10).replace(/-/g, '')
+      : toCalDateUTC(resolveDateInput(event.end));
+    const dtstartLine = isAllDay ? `DTSTART;VALUE=DATE:${dtstart}` : `DTSTART:${dtstart}`;
+    const dtendLine = isAllDay ? `DTEND;VALUE=DATE:${dtend}` : `DTEND:${dtend}`;
     // Why: When attendees are present, the ICS must carry METHOD:REQUEST plus an
     // ORGANIZER and one ATTENDEE line per participant so that Fastmail's CalDAV
     // server generates and sends iTIP (RFC 5546) invite emails. Without these
@@ -888,6 +1193,12 @@ export class CalDAVCalendarClient {
           p => `ATTENDEE;CN="${p.name || p.email}";RSVP=TRUE:mailto:${p.email}`,
         )
       : [];
+    // Build VALARM blocks for each alarm in the request.
+    const alarmBlocks = (event.alarms && event.alarms.length > 0)
+      ? event.alarms.map(a => buildValarm(a.trigger, a.action, a.description))
+      : [];
+    // Build RRULE line if recurrence is specified.
+    const rruleLine = event.recurrence ? `RRULE:${buildRrule(event.recurrence)}` : '';
     const ical = [
       'BEGIN:VCALENDAR',
       'VERSION:2.0',
@@ -896,13 +1207,22 @@ export class CalDAVCalendarClient {
       'BEGIN:VEVENT',
       `UID:${uid}`,
       `DTSTAMP:${now}`,
-      `DTSTART:${dtstart}`,
-      `DTEND:${dtend}`,
+      dtstartLine,
+      dtendLine,
+      rruleLine,
       `SUMMARY:${escapeICalText(event.title)}`,
       event.description ? `DESCRIPTION:${escapeICalText(event.description)}` : '',
       event.location ? `LOCATION:${escapeICalText(event.location)}` : '',
+      event.status ? `STATUS:${event.status.toUpperCase()}` : '',
+      event.transparency ? `TRANSP:${event.transparency.toUpperCase()}` : '',
+      event.priority !== undefined ? `PRIORITY:${event.priority}` : '',
+      event.classification ? `CLASS:${event.classification.toUpperCase()}` : '',
+      event.categories?.length ? `CATEGORIES:${event.categories.map(escapeICalText).join(',')}` : '',
+      event.url ? `URL:${event.url}` : '',
+      'SEQUENCE:0',
       hasParticipants ? 'ORGANIZER;CN=David Gutowsky:mailto:davidgutowsky@fastmail.com' : '',
       ...attendeeLines,
+      ...alarmBlocks,
       'END:VEVENT',
       'END:VCALENDAR',
     ].filter(Boolean).join('\r\n');

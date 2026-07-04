@@ -603,6 +603,59 @@ function buildToolsList() {
               },
               description: 'Event participants (optional)',
             },
+            allDay: {
+              type: 'boolean',
+              description: 'If true, creates an all-day event (date-only, no time component). Default: false.',
+            },
+            alarms: {
+              type: 'array',
+              items: {
+                type: 'object',
+                properties: {
+                  trigger: { type: 'string', description: 'RFC 5545 duration: -PT15M (15 min before), -PT1H (1 hour), -P1D (1 day), -P1W (1 week)' },
+                  action: { type: 'string', enum: ['DISPLAY', 'EMAIL'], description: 'Default: DISPLAY' },
+                  description: { type: 'string', description: 'Alarm text (optional, defaults to "Reminder")' },
+                },
+                required: ['trigger'],
+              },
+              description: 'Alarms/reminders for the event. Example: [{trigger:"-PT15M"}, {trigger:"-P1D"}]',
+            },
+            recurrence: {
+              type: 'object',
+              properties: {
+                freq: { type: 'string', enum: ['DAILY', 'WEEKLY', 'MONTHLY', 'YEARLY'] },
+                interval: { type: 'number', description: 'Every N intervals (e.g. interval=2 with WEEKLY = every 2 weeks)' },
+                count: { type: 'number', description: 'Number of occurrences' },
+                until: { type: 'string', description: 'End date (YYYYMMDD or YYYYMMDDTHHMMSSZ)' },
+                byDay: { type: 'array', items: { type: 'string' }, description: 'Days of week: MO,TU,WE,TH,FR,SA,SU' },
+                byMonthDay: { type: 'array', items: { type: 'number' }, description: 'Days of month (1-31)' },
+              },
+              description: 'Recurrence rule (RFC 5545 RRULE). Example: {freq:"WEEKLY", byDay:["TH"], count:10}',
+            },
+            status: {
+              type: 'string',
+              enum: ['TENTATIVE', 'CONFIRMED', 'CANCELLED'],
+              description: 'Event status (optional)',
+            },
+            transparency: {
+              type: 'string',
+              enum: ['OPAQUE', 'TRANSPARENT'],
+              description: 'Free/busy: OPAQUE=busy (default), TRANSPARENT=free',
+            },
+            priority: {
+              type: 'number',
+              description: 'Priority 0-9 (1=highest, 5=normal, 9=lowest, 0=undefined)',
+            },
+            classification: {
+              type: 'string',
+              enum: ['PUBLIC', 'PRIVATE', 'CONFIDENTIAL'],
+              description: 'Privacy class (optional)',
+            },
+            categories: {
+              type: 'array',
+              items: { type: 'string' },
+              description: 'Tags/categories (optional)',
+            },
           },
           required: ['calendarId', 'title', 'start', 'end'],
         },
@@ -646,6 +699,43 @@ function buildToolsList() {
               type: 'array',
               items: { type: 'string' },
               description: 'Local file paths to attach to the event (images, PDFs). Embedded as base64 in the ICS.',
+            },
+            alarms: {
+              type: 'array',
+              items: {
+                type: 'object',
+                properties: {
+                  trigger: { type: 'string', description: 'RFC 5545 duration: -PT15M, -PT1H, -P1D, -P1W' },
+                  action: { type: 'string', enum: ['DISPLAY', 'EMAIL'], description: 'Default: DISPLAY' },
+                  description: { type: 'string' },
+                },
+                required: ['trigger'],
+              },
+              description: 'Alarms/reminders to SET on the event (replaces all existing alarms). Example: [{trigger:"-PT15M"}]',
+            },
+            status: {
+              type: 'string',
+              enum: ['TENTATIVE', 'CONFIRMED', 'CANCELLED'],
+              description: 'New event status (optional)',
+            },
+            transparency: {
+              type: 'string',
+              enum: ['OPAQUE', 'TRANSPARENT'],
+              description: 'Free/busy transparency (optional)',
+            },
+            priority: {
+              type: 'number',
+              description: 'New priority 0-9 (optional)',
+            },
+            classification: {
+              type: 'string',
+              enum: ['PUBLIC', 'PRIVATE', 'CONFIDENTIAL'],
+              description: 'New privacy class (optional)',
+            },
+            categories: {
+              type: 'array',
+              items: { type: 'string' },
+              description: 'New categories/tags (replaces existing, optional)',
             },
           },
           required: ['eventId'],
@@ -1546,7 +1636,9 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       }
 
       case 'create_calendar_event': {
-        const { calendarId, title, description, start, end, location, participants } = args as any;
+        const { calendarId, title, description, start, end, location, participants,
+                allDay, alarms, recurrence, status, transparency, priority,
+                classification, categories } = args as any;
         if (!calendarId || !title || !start || !end) {
           throw new McpError(ErrorCode.InvalidParams, 'calendarId, title, start, and end are required');
         }
@@ -1571,12 +1663,15 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         const eventId = await davClient.createCalendarEvent({
           calendarId, title, description, start, end, location,
           participants: participants || [],
+          allDay, alarms, recurrence, status, transparency, priority,
+          classification, categories,
         });
         return { content: [{ type: 'text', text: `Calendar event created via CalDAV. Event ID: ${eventId}` }] };
       }
 
       case 'update_calendar_event': {
-        const { eventId, title, description, start, end, location, participants, attachments } = args as any;
+        const { eventId, title, description, start, end, location, participants, attachments,
+                alarms, status, transparency, priority, classification, categories } = args as any;
         if (!eventId) {
           throw new McpError(ErrorCode.InvalidParams, 'eventId is required');
         }
@@ -1586,6 +1681,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         }
         const updated = await davClient.updateCalendarEvent(eventId, {
           title, description, start, end, location, participants, attachments,
+          alarms, status, transparency, priority, classification, categories,
         });
         return { content: [{ type: 'text', text: JSON.stringify(updated, null, 2) }] };
       }
